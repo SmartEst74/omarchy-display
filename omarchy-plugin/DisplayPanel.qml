@@ -154,7 +154,7 @@ Panel {
           }
           PanelText { text: root.description }
           PanelText {
-            text: "Independent TV workspace · view-only · no audio\nThe TV stays on the selected numbered workspace while you switch workspaces on the computer. A workspace is moved, not duplicated on both screens."
+            text: "Live Mirror keeps the same workspace on the computer and TV without moving windows. Extend moves a workspace to the TV. Both are view-only, without audio; computer workspace switches do not change the TV selection."
           }
 
           Flow {
@@ -198,11 +198,43 @@ Panel {
 
           PanelSeparator { width: parent.width }
           PanelText {
+            text: root.status ? "Current mode: " + (root.status.mode || "stopped")
+              + " · next start: " + root.status.configuredMode : "Display mode unavailable."
+            font.bold: true
+          }
+          Flow {
+            width: parent.width
+            spacing: Style.spacing.sm
+            Repeater {
+              model: ["mirror", "extend"]
+              delegate: Button {
+                required property string modelData
+                text: modelData === "mirror" ? "Mirror next start" : "Extend next start"
+                focusable: true
+                bordered: true
+                selected: root.status && root.status.configuredMode === modelData
+                enabled: !root.busy && root.status !== null
+                onClicked: root.runAction(["mode", modelData], "Saving next-start mode…")
+              }
+            }
+          }
+          PanelText {
+            text: root.status && root.status.modeRequiresRestart
+              ? "Mode change pending. Explicitly Stop, then Start to apply; saving never changes the active session."
+              : "Mode is saved for the next start only. Mirror requires the matching compositor plugin; it never silently falls back to Extend."
+          }
+
+          PanelSeparator { width: parent.width }
+          PanelText {
             text: "TV workspace: " + (root.status && root.status.tvWorkspace !== null
               ? root.status.tvWorkspace : "unknown")
             font.bold: true
           }
-          PanelText { text: "Send selects a workspace for the TV. Bring back returns it to the computer without mirroring." }
+          PanelText {
+            text: root.status && (root.status.mode || root.status.configuredMode) === "extend"
+              ? "Extend transfers the selection to TV; Bring back returns it to its recorded computer monitor."
+              : "Mirror shows the same live workspace on both screens, leaving every window in place. Recall is unnecessary."
+          }
           PanelText {
             visible: !root.status || root.status.workspaces.length === 0
             text: root.status ? "No numbered workspaces are available." : "Workspace status unavailable."
@@ -214,10 +246,11 @@ Panel {
               width: content.width
               spacing: Style.spacing.sm
               Text {
-                width: Math.max(0, parent.width - sendButton.width - recallButton.width - parent.spacing * 2)
+                width: Math.max(0, parent.width - sendButton.width
+                  - (recallButton.visible ? recallButton.width + parent.spacing : 0) - parent.spacing)
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Workspace " + modelData.id + " · " + modelData.windows + " window"
-                  + (modelData.windows === 1 ? "" : "s") + (modelData.onTV ? " · on TV" : "")
+                  + (modelData.windows === 1 ? "" : "s") + (modelData.mirrored ? " · mirrored" : modelData.onTV ? " · on TV" : "")
                   + (root.status && modelData.id === root.status.tvWorkspace ? " · selected" : "")
                 textFormat: Text.PlainText
                 color: root.foreground
@@ -227,7 +260,7 @@ Panel {
               }
               Button {
                 id: sendButton
-                text: "Send"
+                text: root.status && (root.status.mode || root.status.configuredMode) === "extend" ? "Extend" : "Mirror"
                 focusable: true
                 bordered: true
                 enabled: !root.busy && root.status && root.status.running
@@ -237,6 +270,7 @@ Panel {
               Button {
                 id: recallButton
                 text: "Bring back"
+                visible: root.status && root.status.mode === "extend"
                 focusable: true
                 bordered: true
                 tooltipText: modelData.recallAvailable

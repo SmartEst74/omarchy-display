@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "id": "smartest74.omarchy-display",
   "name": "Omarchy Display",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "smartest74",
-  "description": "Independent TV workspace status and native display controls",
+  "description": "Live workspace mirroring, explicit extension and native display controls",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Omarchy Display",
-    "description": "Authenticated viewer status, TV workspace selection and next-start sizing",
+    "description": "Authenticated viewer status, Mirror/Extend workspace selection and next-start sizing",
     "category": "Info",
     "allowMultiple": false
   }

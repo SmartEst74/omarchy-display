@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Own only ten conflict-checked Omarchy workspace-send shortcuts."""
+"""Own only ten conflict-checked current-mode TV workspace shortcuts."""
 import argparse
 import fcntl
 import json
@@ -20,16 +20,17 @@ RECORD = STATE / 'keybindings.json'
 BEGIN = '-- BEGIN smartest74.omarchy-display workspace shortcuts'
 END = '-- END smartest74.omarchy-display workspace shortcuts'
 MASK = 64 | 4 | 8  # SUPER, CTRL, ALT in Hyprland's modifier mask.
-DESCRIPTIONS = {number: 'Omarchy Display: send workspace %d to TV' % number for number in range(1, 11)}
+LEGACY_DESCRIPTIONS = {number: 'Omarchy Display: send workspace %d to TV' % number for number in range(1, 11)}
+DESCRIPTIONS = {number: 'Omarchy Display: select workspace %d on TV (current mode)' % number for number in range(1, 11)}
 
 
-def block():
+def block(descriptions=DESCRIPTIONS):
     launcher = shlex.quote(str(HOME / '.local/bin/omarchy-display'))
     lines = [BEGIN]
     for number in range(1, 11):
         # Match Omarchy's physical number-row convention: code 19 is 0.
         lines.append('o.bind("SUPER + CTRL + ALT + code:%d", %s, %s)' %
-                     (number + 9, json.dumps(DESCRIPTIONS[number]),
+                     (number + 9, json.dumps(descriptions[number]),
                       json.dumps(launcher + ' workspace ' + str(number), ensure_ascii=False)))
     lines.append(END)
     return ('\n' + '\n'.join(lines) + '\n').encode()
@@ -57,7 +58,8 @@ def ownership():
         raise RuntimeError('Shortcut ownership state must be private and owned by this user')
     value = json.loads(RECORD.read_text())
     if value.get('schemaVersion') != 1 or value.get('uid') != os.getuid() or \
-            value.get('bindings') != str(BINDINGS) or value.get('block') != block().decode():
+            value.get('bindings') != str(BINDINGS) or \
+            value.get('block') not in (block().decode(), block(LEGACY_DESCRIPTIONS).decode()):
         raise RuntimeError('Shortcut ownership record does not match this installation')
     return value
 
@@ -79,7 +81,8 @@ def config_clean():
 def check():
     data = read_bindings()
     owned = ownership()
-    managed = block()
+    managed = owned['block'].encode() if owned else block()
+    descriptions = LEGACY_DESCRIPTIONS if managed == block(LEGACY_DESCRIPTIONS) else DESCRIPTIONS
     exact = bool(owned and data.count(managed) == 1 and data.count(BEGIN.encode()) == 1 and
                  data.count(END.encode()) == 1)
     if (BEGIN.encode() in data or END.encode() in data) and not exact:
@@ -109,7 +112,7 @@ def check():
         if number is None and not unknown and not row.get('catch_all'):
             continue
         description = row.get('description', '')
-        ours = next((item for item, text in DESCRIPTIONS.items() if text == description), None)
+        ours = next((item for item, text in descriptions.items() if text == description), None)
         if exact and not row.get('catch_all') and not row.get('ignore_mods') and ours and \
                 (number is None or number == ours) and ours not in seen:
             seen.add(ours)
@@ -182,9 +185,11 @@ def install():
         return
     existed = BINDINGS.exists()
     mode = stat.S_IMODE(BINDINGS.stat().st_mode) if existed else 0o600
-    apply(before, before + managed, existed, mode, register=True)
+    previous = owned['block'].encode() if owned else None
+    after = before.replace(previous, managed, 1) if previous and previous in before else before + managed
+    apply(before, after, existed, mode, register=True)
     value = {'schemaVersion': 1, 'uid': os.getuid(), 'bindings': str(BINDINGS),
-             'block': managed.decode(), 'bindingsExisted': existed}
+             'block': managed.decode(), 'bindingsExisted': owned['bindingsExisted'] if owned else existed}
     temporary = RECORD.with_name('keybindings-' + secrets.token_hex(8) + '.tmp')
     try:
         with temporary.open('x') as stream:
@@ -193,13 +198,13 @@ def install():
         temporary.replace(RECORD)
     except OSError:
         # An unrecorded config edit is not an owned installation. Undo it.
-        apply(before + managed, before, True, mode)
+        apply(after, before, True, mode)
         if not existed and not before:
             BINDINGS.unlink(missing_ok=True)
         raise
     finally:
         temporary.unlink(missing_ok=True)
-    print('Installed SUPER+CTRL+ALT+1..9/0 workspace-send shortcuts (0 sends workspace 10).')
+    print('Installed SUPER+CTRL+ALT+1..9/0 current-mode workspace shortcuts (0 selects workspace 10).')
 
 
 def uninstall():
@@ -208,7 +213,7 @@ def uninstall():
         print('No owned workspace shortcuts to remove.')
         return
     before = read_bindings()
-    managed = block()
+    managed = owned['block'].encode()
     if before.count(managed) != 1:
         if BEGIN.encode() in before or END.encode() in before:
             raise RuntimeError('Owned shortcut block was edited; no user configuration was removed')

@@ -70,7 +70,13 @@ BarWidget {
   function validDetails(value) {
     if (!optionalDimension(value.width) || !optionalDimension(value.height)
         || !optionalDimension(value.fps) || !Array.isArray(value.workspaces)
-        || !(value.tvWorkspace === null || positiveInteger(value.tvWorkspace))) return false
+        || !(value.tvWorkspace === null || positiveInteger(value.tvWorkspace))
+        || !(value.tvWorkspaceMirror === null || positiveInteger(value.tvWorkspaceMirror))
+        || !(value.mode === null || ["mirror", "extend"].indexOf(value.mode) >= 0)
+        || ["mirror", "extend"].indexOf(value.configuredMode) < 0
+        || typeof value.modeRequiresRestart !== "boolean"
+        || (value.mode !== "mirror" && value.tvWorkspaceMirror !== null)
+        || (value.mode === "mirror" && value.tvWorkspaceMirror !== value.tvWorkspace)) return false
     var seen = {}
     for (var i = 0; i < value.workspaces.length; i++) {
       var workspace = value.workspaces[i]
@@ -78,6 +84,9 @@ BarWidget {
           || typeof workspace.windows !== "number" || !isFinite(workspace.windows)
           || workspace.windows < 0 || Math.floor(workspace.windows) !== workspace.windows
           || typeof workspace.onTV !== "boolean"
+          || typeof workspace.mirrored !== "boolean"
+          || (workspace.mirrored && (workspace.onTV || workspace.recallAvailable || value.mode !== "mirror"))
+          || (value.mode === "mirror" && workspace.recallAvailable)
           || typeof workspace.recallAvailable !== "boolean" || seen[workspace.id]) return false
       seen[workspace.id] = true
     }
@@ -140,9 +149,11 @@ BarWidget {
     statusData = {
       running: value.running, width: value.width, height: value.height, fps: value.fps,
       tvWorkspace: value.tvWorkspace,
+      tvWorkspaceMirror: value.tvWorkspaceMirror, mode: value.mode,
+      configuredMode: value.configuredMode, modeRequiresRestart: value.modeRequiresRestart,
       workspaces: value.workspaces.map(function(workspace) {
         return {
-          id: workspace.id, windows: workspace.windows, onTV: workspace.onTV,
+          id: workspace.id, windows: workspace.windows, onTV: workspace.onTV, mirrored: workspace.mirrored,
           recallAvailable: workspace.recallAvailable
         }
       }),

@@ -31,6 +31,8 @@ PLUGIN = CONFIG / 'omarchy/plugins' / ID
 SHELL = CONFIG / 'omarchy/shell.json'
 MANIFEST = STATE / 'install.json'
 MARKER = '# Owned by Omarchy Display installer; do not edit.'
+MIRROR_COMMIT = 'efb50993780079460b0cbed1363e2166a2de1d9f'
+MIRROR_NAME = 'omarchy-workspace-mirror'
 
 
 def private(path):
@@ -199,17 +201,21 @@ def uninstall(purge):
 
 
 def dependencies():
-    missing = [name for name in ('cc', 'git', 'node', 'npm', 'ffmpeg', 'pkg-config', 'wayland-scanner', 'hyprctl')
+    missing = [name for name in ('cc', 'c++', 'git', 'node', 'npm', 'ffmpeg', 'pkg-config', 'wayland-scanner', 'hyprctl')
                if not shutil.which(name)]
     if sys.version_info < (3, 10):
         missing.append('Python >= 3.10')
     if not importlib.util.find_spec('venv') or not importlib.util.find_spec('ensurepip'):
         missing.append('Python venv + ensurepip')
-    libraries = ('wayland-client', 'wayland-protocols', 'pixman-1', 'libdrm', 'xkbcommon', 'jansson', 'zlib', 'libturbojpeg')
+    libraries = ('hyprland', 'wayland-client', 'wayland-server', 'wayland-protocols', 'pixman-1',
+                 'libdrm', 'libinput', 'libudev', 'pangocairo', 'egl', 'glesv2',
+                 'xkbcommon', 'jansson', 'zlib', 'libturbojpeg')
     if shutil.which('pkg-config'):
         for name in libraries:
             if subprocess.run(['pkg-config', '--exists', name]).returncode:
                 missing.append('pkg-config: ' + name)
+        if all(subprocess.run(['pkg-config', '--exists', name]).returncode for name in ('lua5.4', 'lua')):
+            missing.append('pkg-config: lua5.4 or lua')
     if missing:
         raise RuntimeError('Missing native dependencies:\n  ' + '\n  '.join(missing) +
                            '\nInstall the corresponding OS packages yourself; no packages or firewall rules were changed.')
@@ -218,6 +224,40 @@ def dependencies():
         raise RuntimeError('Node.js >= 20 is required by the desktop bridge')
     if os.geteuid() == 0:
         raise RuntimeError('Run the installer as your desktop user, never with sudo')
+    version = subprocess.check_output(['pkg-config', '--modversion', 'hyprland'], text=True).strip()
+    flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags-only-I', 'hyprland'], text=True))
+    headers = [Path(flag[2:]) / 'src/version.h' for flag in flags if flag.startswith('-I')]
+    header = next((path for path in headers if path.is_file()), None)
+    if version != '0.56.2' or header is None or \
+            '#define GIT_COMMIT_HASH    "' + MIRROR_COMMIT + '"' not in header.read_text():
+        raise RuntimeError('Mirror build requires matching Hyprland 0.56.2 headers at commit ' + MIRROR_COMMIT)
+
+
+def stage_mirror(stage):
+    source = ROOT / 'mirror-plugin'
+    target = stage / 'mirror-plugin'
+    target.mkdir()
+    shutil.copyfile(source / 'CMakeLists.txt', target / 'CMakeLists.txt')
+    # Only the compositor plugin's public source tree is eligible for staging.
+    for path in (source / 'src').rglob('*'):
+        if path.is_symlink():
+            raise RuntimeError('Mirror plugin source may not contain symbolic links')
+        destination = target / path.relative_to(source)
+        if path.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+        elif path.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+    build = target / 'build'
+    cmake = str(CACHE / 'capture/build-tools/bin/cmake')
+    subprocess.run([cmake, '-S', str(target), '-B', str(build), '-DCMAKE_BUILD_TYPE=Release'], check=True)
+    subprocess.run([cmake, '--build', str(build), '--parallel', '2'], check=True)
+    library = target / 'libomarchy-workspace-mirror.so'
+    shutil.copyfile(build / library.name, library)
+    library.chmod(0o700)
+    save(target / 'mirror-build.json', {'commit': MIRROR_COMMIT, 'name': MIRROR_NAME,
+                                      'sha256': hashlib.sha256(library.read_bytes()).hexdigest()})
+    shutil.rmtree(build)
 
 
 def install():
@@ -259,6 +299,7 @@ def install():
         shutil.copyfile(CACHE / 'capture/wayvnc-build/wayvnc', stage / 'capture/wayvnc')
         (stage / 'capture/wayvnc').chmod(0o700)
         shutil.copyfile(CACHE / 'capture/capture-build.json', stage / 'capture/capture-build.json')
+        stage_mirror(stage)
         # Bytecode goes in the installed payload, never into the source checkout.
         subprocess.run([sys.executable, '-m', 'compileall', '-q', str(stage / 'desktop/display.py'),
                         str(stage / 'desktop/build-wayvnc.py'), str(stage / 'desktop/keybindings.py'),
@@ -276,6 +317,15 @@ def install():
         added, seeds = ((previous or {}).get('shellAdded', False), (previous or {}).get('shellSeeds', []))
         if previous:
             stop_installed()
+            backup = STATE / 'install-backups' / str(time.time_ns())
+            private(backup)
+            shutil.copyfile(MANIFEST, backup / 'install.json')
+            if LAUNCHER.exists():
+                shutil.copyfile(LAUNCHER, backup / 'launcher')
+            if APP.exists():
+                shutil.copytree(APP, backup / 'app', symlinks=True)
+            if PLUGIN.exists():
+                shutil.copytree(PLUGIN, backup / 'omarchy-plugin', symlinks=True)
         if has_shell:
             added, seeds = shell_registration(previous)
         if APP.exists():
@@ -309,7 +359,11 @@ def install():
             shutil.rmtree(stage)
     print('Installed: ' + str(LAUNCHER))
     print('No autostart, OS packages or firewall rules were changed. Only owned keyboard shortcuts and shell entries were registered.')
-    print('Next: omarchy-display init; omarchy-display menu')
+    print('Next: omarchy-display init (fresh mode: Mirror); omarchy-display menu')
+    print('Existing unversioned settings remain Extend. Use omarchy-display mode mirror|extend for the next start.')
+    if has_shell:
+        print('After updating already-loaded bar controls, run omarchy-restart-shell while the desktop is unlocked.')
+    print('Private installation, shell and shortcut backups are retained in the application XDG state directory.')
     print('Uninstall: omarchy-display uninstall (add --purge-config to delete private pairing).')
 
 

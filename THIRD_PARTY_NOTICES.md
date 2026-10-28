@@ -6,7 +6,13 @@ Omarchy Display integrates existing software; its project license does not repla
 
 The original launcher work is **[CleanFrame](https://github.com/nthnclrk/CleanFrame)** by **Nathan Clark, copyright 2026**, pinned provenance commit [`fa537d1892b71d2de2bf94c24cbff3812e9f70d5`](https://github.com/nthnclrk/CleanFrame/tree/fa537d1892b71d2de2bf94c24cbff3812e9f70d5), under the [MIT License](https://github.com/nthnclrk/CleanFrame/blob/fa537d1892b71d2de2bf94c24cbff3812e9f70d5/LICENSE). Retain that copyright and permission notice for copied portions.
 
-Omarchy Display adds the independent virtual-workspace display controller, output-locked capture integration, asynchronous bridge, TV receiver/pairing flow, packaging tooling and Omarchy UI integration. These changes do not make the upstream launcher, wayvnc, neatvnc, noVNC or Jellyfin original inventions of this project. Commercial-channel artwork and private fork history are not part of this distribution.
+Omarchy Display adds workspace mirroring/extension controls, output-locked capture integration, asynchronous bridge, TV receiver/pairing flow, packaging tooling and Omarchy UI integration. Upstream launcher, compositor rendering, capture, and Jellyfin are not original inventions of this project. Commercial-channel artwork and private fork history are not part of this distribution.
+
+## Workspace mirror rendering
+
+`mirror-plugin/src/main.cpp` adapts the render-hook/offscreen capture approach and state-guard patterns from [sandwichfarm/hyprexpo](https://github.com/sandwichfarm/hyprexpo/tree/62fc27b8d6e0ff2eb0b97fa0568a91ad5d4239d2), inspected at commit `62fc27b8d6e0ff2eb0b97fa0568a91ad5d4239d2`, including `OverviewCapture.cpp`, `Overview.cpp`, and `main.cpp`. The upstream **BSD-3-Clause** notice, copyright 2023 Hypr Development, is retained in [`mirror-plugin/src/NOTICE`](mirror-plugin/src/NOTICE) and installed with the plugin source. Preserve it when distributing source or binaries; the root MIT license does not replace it.
+
+The plugin builds against the host's exact Hyprland 0.56.2 headers and links host libraries. This repository does not redistribute a modified Hyprland executable. Hyprland and linked libraries retain their own upstream license terms.
 
 ## Capture stack
 
@@ -34,7 +40,7 @@ All three pinned upstream `COPYING` files were inspected; they contain this noti
 > TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 > THIS SOFTWARE.
 
-The local builder changes wayvnc `src/main.c` to lock capture to an explicitly selected output and fail closed if that output disappears or a switch would capture another output. It does not claim to author wayvnc or neatvnc. The builder pins Meson 1.12.1 and Ninja 1.13.0 build tools via hashed requirements; their upstream notices and the licenses of host libraries remain applicable to any redistributed tools/binaries. Host library versions are recorded in the capture build receipt, not fabricated as fixed source pins here.
+The builder changes wayvnc `src/main.c` to lock capture to the selected output and fail closed if it disappears or a switch would capture another output. It does not claim to author wayvnc or neatvnc. Meson 1.12.1, Ninja 1.13.0, and [CMake 3.31.6](https://pypi.org/project/cmake/3.31.6/) build tools use hash-pinned wheel requirements in a private environment; their own upstream licenses/notices remain applicable. Host library versions are recorded in the capture build receipt.
 
 ## Current image receiver and bridge
 

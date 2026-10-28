@@ -1,16 +1,16 @@
 # Omarchy Display
 
-An experimental, view-only TV receiver for an **independent Hyprland workspace**, with Omarchy bar controls. It creates a temporary virtual output on the computer and sends that output to a Samsung Tizen TV. The selected TV workspace stays visible while the laptop switches its own workspaces. This is extending the desktop, not mirroring the laptop panel.
+An experimental, view-only Samsung TV display for a **selected Hyprland workspace**, with Omarchy bar controls. **Mirror** keeps the same live workspace on the computer and TV, even while the computer switches to other workspaces. **Extend** remains a separate option that transfers a workspace to an independent virtual output.
 
-**Verified on the UE40MU6120 at 720p:** a real moving workspace decoded about 24 frames/s in one measured run. The remaining mouse lag is noticeable; this is not a zero-latency monitor replacement. Higher FPS settings are caps, not performance guarantees. See the measurement scope below.
+**Earlier Extend-mode measurement on the UE40MU6120 at 720p:** a real moving workspace decoded about 24 frames/s. This is not a Mirror benchmark or a zero-latency monitor replacement. Higher FPS settings are caps, not performance guarantees. See the measurement scope below.
 
 ## Scope and status
 
-- Send an existing numbered workspace to the TV, select it there, and keep computer focus on a physical monitor. Selecting another TV workspace changes what the TV displays; ordinary laptop workspace switching does not.
-- A sent workspace moves to the virtual output; it is not rendered simultaneously on both outputs. Bring back returns a workspace to its recorded original monitor. Stop removes the owned virtual output and recovers moved content without closing applications.
+- **Mirror (fresh-install default):** select an existing numbered workspace. Its windows stay on their original computer monitor and remain usable there; the TV continues rendering that same workspace live when the computer switches away. This is neither a frozen snapshot nor whole-monitor mirroring that follows the active workspace.
+- **Extend:** move a selected workspace to the temporary TV output. Bring back returns it to its recorded original monitor. Stop removes the owned output and recovers transferred content without closing applications. Existing v1.1 settings retain Extend until explicitly changed.
 - The receiver is **view-only, with no audio, keyboard/mouse forwarding or clipboard sharing**. Applications continue running on Linux. A matching TV-only interface cannot reproduce arbitrary Linux applications: that requires streaming their pixels or video.
-- The implementation is a Python controller, C [wayvnc](https://github.com/any1/wayvnc)/[neatvnc](https://github.com/any1/neatvnc) capture over a private Unix socket, a Node.js bridge with an internal raw-RFB client and native [FFmpeg](https://ffmpeg.org/) JPEG encoder, and a handwritten ES5 TV receiver using native image decoding. It is not Rust, hardware H.264 streaming, a new desktop protocol, or a rewritten TV operating system.
-- Real-device work is limited to **Samsung UE40MU6120, Tizen 3.0, firmware T-KTMDEUC 1410.1**. Pairing persistence, real workspace rendering, bar-panel Start, workspace transfer/recall and independent computer-workspace switching have been exercised. Other Samsung models, firmware versions and TV platforms remain unverified.
+- Mirror adds an exact-version C++ Hyprland render plugin with a reused offscreen framebuffer and GPU letterboxing. Both modes use the Python controller, C [wayvnc](https://github.com/any1/wayvnc)/[neatvnc](https://github.com/any1/neatvnc) capture over a private Unix socket, Node.js raw-RFB bridge, native [FFmpeg](https://ffmpeg.org/) JPEG encoder, and ES5 TV receiver. This is not Rust, hardware H.264 streaming, a new desktop protocol, or a rewritten TV operating system.
+- Real-device work is limited to **Samsung UE40MU6120, Tizen 3.0, firmware T-KTMDEUC 1410.1**. Pairing reuse, actual TV decoding, simultaneous workspace mirroring, live inactive-workspace updates, unchanged source-window ownership, and Extend transfer/recall have been exercised. Other Samsung models, firmware versions and TV platforms remain unverified.
 
 For media playback rather than a Linux desktop, see the separate [Jellyfin TV integration](integrations/jellyfin-tv/README.md).
 
@@ -24,11 +24,13 @@ A cable is the simplest reliable independent monitor **with audio**: use the com
 
 ### Linux host
 
-- Linux x86-64 in the target Hyprland session, with `hyprctl`, Wayland and a private `XDG_RUNTIME_DIR`. The controller uses Hyprland's Lua `hyprctl eval` interface; older configurations/APIs are not interchangeable.
+- Linux x86-64, **Hyprland 0.56.2 at commit `efb50993780079460b0cbed1363e2166a2de1d9f`**, matching development headers, `hyprctl`, Wayland, the OpenGL renderer, and a private `XDG_RUNTIME_DIR`. The controller uses Hyprland's Lua `hyprctl eval` interface.
 - A current Omarchy shell with its Quickshell plugin SDK for the native bar popup. Without `omarchy-shell`, the installer installs the host CLI without registering the bar or shortcuts.
-- Python **3.10+** with `venv` and `ensurepip`; Node.js **20+**, npm, FFmpeg (`ffmpeg`, with JPEG encoding support), Git, a C compiler (`cc`), `pkg-config`, and `wayland-scanner`.
-- Native development libraries discoverable through `pkg-config`: `wayland-client`, `wayland-protocols`, `pixman-1`, `libdrm`, `xkbcommon` (1.0.0+), `jansson`, `zlib`, and `libturbojpeg`. Install the corresponding packages for your distribution yourself.
-- Network access during installation to fetch pinned npm dependencies, upstream capture sources and hash-pinned Meson/Ninja tools. Build tools and capture sources stay in the application's user cache; the system's wayvnc is not replaced.
+- Python **3.10+** with `venv` and `ensurepip`; Node.js **20+**, npm, FFmpeg with JPEG encoding support, Git, C and C++23 compilers compatible with the installed Hyprland headers, `pkg-config`, and `wayland-scanner`.
+- Native development libraries discoverable through `pkg-config`: `hyprland`, `wayland-client`, `wayland-server`, `wayland-protocols`, `pixman-1`, `libdrm`, `libinput`, `libudev`, `pangocairo`, `egl`, `glesv2`, `xkbcommon` (1.0.0+), `jansson`, `zlib`, `libturbojpeg`, and `lua5.4` or `lua`. Install the corresponding OS packages yourself.
+- Installation fetches pinned npm dependencies, capture sources, and hash-pinned Meson/Ninja/CMake wheels. Tools and capture sources stay in the application's private user cache; no global CMake installation or replacement system wayvnc is needed.
+
+**Compositor risk:** Mirror hooks internal rendering functions and can crash the desktop. Save work before enabling it. Build-time commit checks and runtime commit/API-hash checks refuse mismatched versions; a Hyprland upgrade needs a reviewed port and fresh isolated testing, not disabling these checks. The plugin is loaded only for Mirror and unloaded on Stop; it is not added to your Hyprland configuration. Mirror stops and disconnects the receiver when the computer session locks; unlock and explicitly start it again.
 
 ### TV and network
 
@@ -49,9 +51,9 @@ omarchy-display start
 
 Ensure `~/.local/bin` is on your `PATH`. `init` asks for the host's private interface address and the authorized TV address, then generates a private pairing secret. It refuses to overwrite existing configuration.
 
-The installer builds the pinned, output-locked capture binary, installs the host and static TV receiver source, and registers the native bar widget and conflict-checked shortcuts when Omarchy shell is available. The CLI is installed under `~/.local/bin`. It does not install OS packages, open firewall ports or start sharing automatically. It refuses to overwrite unowned or locally changed installed files.
+The installer builds the pinned output-locked capture binary and version-matched compositor plugin, installs the host and static TV source, and registers the native bar widget and conflict-checked shortcuts when available. It does not install OS packages, open firewall ports, load the compositor plugin, or start sharing automatically. Unowned or locally changed installed files are not overwritten.
 
-To update, obtain the desired source revision and run `./install.sh` again. An update stops an installed display session; start it explicitly afterwards. Pairing configuration is retained.
+To update, obtain the desired source revision and run `./install.sh` again. This stops an installed display session; start it explicitly afterwards. Pairing is retained. To replace already-loaded native controls, run `omarchy-restart-shell` while the desktop is unlocked; do not use the settings-resetting `omarchy-refresh-shell`. Mirror uses the existing v1.1 native-image TV receiver without a wire-protocol or signing change.
 
 ## Install the TV receiver
 
@@ -96,22 +98,27 @@ The receiver remembers the endpoint and secret **only after the first desktop im
 
 ### Controls
 
-Left-click the Omarchy monitor icon for the native popup: Start, Stop, numbered workspace Send/Bring back, and capture size/FPS for the next start. Pairing opens a private terminal only after an explicit click; pairing details never appear in status or the bar.
+Left-click the Omarchy monitor icon for Start/Stop, **Mirror / Extend** mode selection, numbered workspace selection, and next-start size/FPS. Mode and sizing changes never silently replace an active stream: stop and start explicitly. Bring back appears only in Extend. Pairing opens a private terminal only after an explicit click; credentials never appear in status or the bar.
 
 The icon remains visible when stopped. A hollow accent dot means ready with no viewer; a filled dot means the host reports an authenticated capture viewer, **not measured playback quality**. Error and starting states are distinct. Status is polled, not instantaneous. See [bar widget details](omarchy-plugin/README.md).
 
-When registered successfully, `SUPER+CTRL+ALT+1` through `9` send/select that numbered workspace on the TV; `SUPER+CTRL+ALT+0` means workspace **10**. The installer checks for conflicts rather than overwriting existing shortcuts. The selected workspace must already exist, and the host display must be started.
+`SUPER+CTRL+ALT+1` through `9` select that workspace in the **current mode**; `SUPER+CTRL+ALT+0` selects workspace **10**. The installer checks conflicts and migrates only its exact, unedited v1.1 shortcut block. The workspace must already exist and the host must be started.
 
 ```sh
-omarchy-display workspace 3       # Send/select existing workspace 3 on the TV
-omarchy-display recall 3          # Return it to its recorded original monitor
+omarchy-display mode mirror       # Save preferred mode for the next start
+omarchy-display start
+omarchy-display workspace 3       # Mirror existing workspace 3; no windows move
+omarchy-display mirror 3          # Explicit alias; rejects an active Extend session
 omarchy-display status            # Safe summary; no pairing credential
 omarchy-display status --json
 omarchy-display menu              # Interactive terminal alternative
 omarchy-display stop
 ```
 
-`omarchy-display move WINDOW_ADDRESS` moves one window, using a real address from `hyprctl clients -j`; the terminal menu can move the previously focused window without copying an address. Bring back is available only for workspaces whose original monitor was recorded in this session, not the virtual output's automatically created workspace. Commands do not promise duplicated rendering.
+To use extension instead: stop, run `omarchy-display mode extend`, then start. `omarchy-display extend 3` requires an active Extend session; `omarchy-display recall 3` brings back a workspace transferred by that session. Mirror rejects recall and window-move operations because it never transferred those windows.
+
+In Extend only, `omarchy-display move WINDOW_ADDRESS` moves one window using its real `hyprctl clients -j` address. Bring back is limited to workspaces with a recorded original monitor. Mirror preserves source ownership and aspect ratio, adding black borders where the source and capture aspect ratios differ.
+
 In the receiver, **Fit: Screen** scales the workspace to the app viewport; **Fit: App pixels** keeps source pixels at app-pixel size, with borders or clipping as necessary. This does not bypass Samsung's application-resolution scaling to the physical panel.
 
 ### Dimensions and performance
@@ -131,7 +138,7 @@ Capture dimensions, the receiver's browser viewport and a TV-reported panel reso
 
 The bridge sends complete JPEG images over WebSocket with at most one outstanding image, then waits for the receiver's display acknowledgement. It retains the latest frame rather than building a FIFO of stale images. This bounds queued work; it does not guarantee capture-to-screen latency. Full-frame JPEG trades bandwidth and encoding/decoding work for a simpler old-TV receiver. There is no audio.
 
-Measured using a real terminal workspace changing at 30 Hz on this TV, with the 720p/30 preset:
+The following **v1.1 Extend-mode** measurements used a real terminal workspace changing at 30 Hz on this TV with the 720p/30 preset. They are not a Mirror-mode performance guarantee:
 
 | Measurement | Observed result |
 | --- | --- |
@@ -170,13 +177,15 @@ From the checkout:
 
 The installed equivalent is `omarchy-display uninstall` (optionally `--purge-config`). Uninstall stops the owned session and removes owned launcher, plugin, shell registration and shortcuts while preserving unrelated/changed files. Build cache, private logs and shell backups are retained. Purging the host configuration does not erase TV `localStorage`; use Forget pairing on the TV. Remove the TV widget through the TV's app management separately.
 
+For rollback, uninstall the currently installed version **without** `--purge-config`, then run the installer from a separate checkout of the desired earlier tag and start explicitly. This lets the current controller clear/unload its own compositor plugin before older files replace it. Rollback to `v1.1.0` was exercised with byte-identical pairing configuration and unrelated compositor plugins preserved; that version always uses extension, not true mirroring.
+
 ## Source and attribution
 
 The host installer is also the source-build entry point. For a standalone capture build, `python3 desktop/build-wayvnc.py` uses the pinned sources/tools and native dependencies above, writes to the application XDG cache, and does not install or start the server. `npm ci --prefix desktop` installs the bridge's locked dependencies; the TV receiver needs no JavaScript bundle build. Generated files and packages are not source.
 
 The project began from [CleanFrame](https://github.com/nthnclrk/CleanFrame/tree/fa537d1892b71d2de2bf94c24cbff3812e9f70d5), commit `fa537d1892b71d2de2bf94c24cbff3812e9f70d5`, by Nathan Clark (2026), under the [MIT license](LICENSE). CleanFrame provided a remote-oriented Samsung home-screen launcher, app launching, layouts/settings, wallpaper and clock UI, ES5 runtime conventions and TV setup groundwork. It did **not** provide this independent Linux workspace extender or the Jellyfin compatibility work. Its reference TV differs from this project's tested device; its compatibility and native Home/startup behavior are not inherited promises here.
 
-The extender adds host lifecycle/workspace controls, an output-lock integration around existing wayvnc/neatvnc, the authenticated asynchronous bridge and bounded JPEG-frame delivery, the ES5 receiver, pairing persistence, and Omarchy controls. Existing capture protocols and JPEG encoding are not original inventions of this project.
+The display adds host lifecycle/workspace controls, true workspace mirroring and explicit extension, output-lock integration, an authenticated asynchronous bridge with bounded JPEG delivery, the ES5 receiver, pairing persistence, and Omarchy controls. The render-hook/offscreen capture approach is adapted from [hyprexpo](https://github.com/sandwichfarm/hyprexpo/tree/62fc27b8d6e0ff2eb0b97fa0568a91ad5d4239d2); its BSD notice is retained in [mirror-plugin/src/NOTICE](mirror-plugin/src/NOTICE). Existing compositor rendering, capture protocols, and JPEG encoding are not original inventions of this project.
 
 The [Jellyfin integration](integrations/jellyfin-tv/README.md) is the full existing **Jellyfin Web 12.2** application plus the official [Jellyfin Tizen wrapper](https://github.com/jellyfin/jellyfin-tizen), adapted for the older engine—not a media client authored from scratch. Its build requirements and compatibility limits are separate from the desktop receiver's.
 

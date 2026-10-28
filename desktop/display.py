@@ -28,6 +28,120 @@ CONFIG = CONFIG_DIR / 'config.json'
 STATE = PRIVATE / 'state.json'
 CAPTURE = ROOT / 'capture/wayvnc'
 COMMIT = 'bb837459c75fd3c267d48af170ac7ed2566f67e5'
+MIRROR_COMMIT = 'efb50993780079460b0cbed1363e2166a2de1d9f'
+MIRROR_NAME = 'omarchy-workspace-mirror'
+MIRROR_LIBRARY = ROOT / 'mirror-plugin/libomarchy-workspace-mirror.so'
+
+
+def configured_mode(value=None):
+    if value is None and not CONFIG.exists():
+        return 'mirror'
+    mode = (config() if value is None else value).get('mode', 'extend')
+    if mode not in ('mirror', 'extend'):
+        raise RuntimeError('Display mode must be mirror or extend')
+    return mode
+
+
+def session_mode(state):
+    # v1.1 sessions have no mode and really did transfer workspaces.
+    mode = state.get('mode', 'extend')
+    if mode not in ('mirror', 'extend'):
+        raise RuntimeError('Invalid running display mode')
+    return mode
+
+
+def mode(selected):
+    if selected not in ('mirror', 'extend'):
+        raise RuntimeError('Choose mode mirror or extend')
+    value = config()
+    value['mode'] = selected
+    save(CONFIG, value)
+    print('Saved %s for the next start. The current display was not changed; explicitly stop, then start to apply.' %
+          selected.capitalize())
+
+
+def mirror_receipt(state=None):
+    try:
+        receipt = load(ROOT / 'mirror-plugin/mirror-build.json')
+        valid = isinstance(receipt, dict) and not MIRROR_LIBRARY.is_symlink() and MIRROR_LIBRARY.is_file() and \
+            MIRROR_LIBRARY.stat().st_uid == os.getuid() and not MIRROR_LIBRARY.stat().st_mode & 0o022 and \
+            receipt.get('commit') == MIRROR_COMMIT and receipt.get('name') == MIRROR_NAME and \
+            receipt.get('sha256') == hashlib.sha256(MIRROR_LIBRARY.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        valid = False
+    if not valid:
+        raise RuntimeError('Mirror unavailable: plugin is missing or not the verified owned build; rerun ./install.sh')
+    version = hypr('version', state=state, json_output=True)
+    if not isinstance(version, dict) or version.get('commit') != MIRROR_COMMIT or \
+            version.get('version') != '0.56.2' or version.get('dirty') is not False:
+        raise RuntimeError('Mirror requires the exact clean Hyprland 0.56.2 build ' + MIRROR_COMMIT)
+    return receipt
+
+
+def mirror_status(state):
+    report = hypr('omarchy-display-mirror', state=state, json_output=True, timeout=2)
+    if not isinstance(report, dict) or type(report.get('active')) is not bool or \
+            not {'active', 'workspace', 'output', 'locked'} <= report.keys() or \
+            type(report.get('locked')) is not bool or \
+            not (report.get('workspace') is None or type(report.get('workspace')) is int and report['workspace'] > 0) or \
+            not (report.get('output') is None or isinstance(report.get('output'), str)):
+        raise RuntimeError('Mirror plugin status is unavailable or incompatible')
+    if report['active'] and (report['workspace'] is None or report['output'] is None):
+        raise RuntimeError('Mirror plugin reported an invalid active selection')
+    return report
+
+
+def require_mirror_health(state):
+    report = mirror_status(state)
+    if report['locked']:
+        raise RuntimeError('Computer session locked; Mirror stopped. Unlock and start the display again.')
+    if not report['active'] or report['output'] != state['output'] or \
+            report['workspace'] != state.get('mirrorWorkspace'):
+        raise RuntimeError('Mirror plugin lost the selected workspace; stream stopped')
+    return report
+
+def mirror_plugins(state):
+    plugins = hypr('plugin', 'list', state=state, json_output=True)
+    if not isinstance(plugins, list) or any(not isinstance(plugin, dict) for plugin in plugins):
+        raise RuntimeError('Mirror plugin inventory is unavailable or incompatible')
+    return [plugin for plugin in plugins if plugin.get('name') == MIRROR_NAME]
+
+
+
+def load_mirror(state):
+    receipt = mirror_receipt(state)
+    if mirror_plugins(state):
+        raise RuntimeError('Mirror plugin is already loaded outside this session; stop its owner before starting')
+    # Persist ownership before IPC so cleanup can recover a partially completed load.
+    state['mirrorPlugin'] = {'path': str(MIRROR_LIBRARY), 'sha256': receipt['sha256']}
+    save(STATE, state)
+    hypr('plugin', 'load', str(MIRROR_LIBRARY), state=state)
+    report = mirror_status(state)
+    if report['active']:
+        raise RuntimeError('Newly loaded Mirror plugin unexpectedly has an active selection')
+
+
+def clear_mirror(state):
+    if not state.get('mirrorPlugin'):
+        return
+    if not mirror_plugins(state):
+        return
+    hypr('eval', 'assert(hl.plugin.omarchy_display.stop())', state=state)
+    report = mirror_status(state)
+    if report['active'] or report['workspace'] is not None or report['output'] is not None:
+        raise RuntimeError('Mirror plugin did not clear its selection; stream closed for recovery')
+
+
+def unload_mirror(state):
+    owned = state.get('mirrorPlugin')
+    if not owned:
+        return
+    if not mirror_plugins(state):
+        return
+    receipt = mirror_receipt(state)
+    if owned != {'path': str(MIRROR_LIBRARY), 'sha256': receipt['sha256']}:
+        raise RuntimeError('Mirror plugin ownership changed; refusing to unload any plugin')
+    hypr('plugin', 'unload', owned['path'], state=state)
 
 
 def private_directory(path):
@@ -155,6 +269,7 @@ def config():
     if type(value['port']) is not int or not 1024 <= value['port'] <= 65535:
         raise RuntimeError('Port must be an unprivileged TCP port')
     capture_size(value)
+    configured_mode(value)
     return value
 
 
@@ -275,7 +390,7 @@ def init():
         raise RuntimeError('Config already exists; edit the private file locally or use rotate')
     value = {'listen': input('Host private IPv4 address (explicit interface): ').strip(),
              'tv': input('Authorized TV IPv4 address: ').strip(),
-             'port': 6080, 'secret': secrets.token_hex(16)}
+             'port': 6080, 'secret': secrets.token_hex(16), 'mode': 'mirror'}
     save(CONFIG, value)
     config()
     print('Private config created; use pair locally for the endpoint and pairing secret.')
@@ -325,7 +440,21 @@ def release_reservation(state):
 
 
 def cleanup(state):
-    # Always close LAN bridge before capture, then touch only our named output.
+    mirror_error = None
+    try:
+        original_live = any(item['instance'] == state['instance'] for item in hypr('instances', json_output=True))
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        original_live = False
+        mirror_error = error
+    if original_live and session_mode(state) == 'mirror':
+        try:
+            if os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') != state['instance']:
+                raise RuntimeError('Recover Mirror from the original Hyprland session')
+            clear_mirror(state)
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+            mirror_error = error
+    # Clear/blacken Mirror before closing capture. Even failed plugin IPC must
+    # close the LAN bridge and capture; retain ownership state for recovery.
     processes = [state.get(key) for key in ('bridge', 'capture')]
     for process in processes:
         kill_owned(process)
@@ -334,7 +463,8 @@ def cleanup(state):
             kill_owned(process, signal.SIGKILL)
         if not wait_owned(processes, 5):
             raise RuntimeError('Owned bridge/capture has not exited; recovery state retained')
-    original_live = any(item['instance'] == state['instance'] for item in hypr('instances', json_output=True))
+    if mirror_error:
+        raise RuntimeError('Mirror could not be cleared; streaming stopped and recovery state retained') from mirror_error
     if original_live and os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') != state['instance']:
         raise RuntimeError('Recovery requires the original Hyprland session; no other output was touched')
     # An exited compositor cannot retain its virtual outputs. Never query/remove
@@ -347,12 +477,12 @@ def cleanup(state):
         clients = hypr('clients', state=state, json_output=True)
         workspaces = hypr('workspaces', state=state, json_output=True)
         workspace_ids = {w['id'] for w in workspaces}
-        for address, previous in state.get('moves', {}).items():
+        for address, previous in (state.get('moves', {}) if session_mode(state) == 'extend' else {}).items():
             window = next((w for w in clients if w['address'] == address), None)
             if window and window['monitor'] == target['id'] and previous in workspace_ids:
                 hypr('eval', 'hl.dispatch(hl.dsp.window.move({window="address:%s",workspace=%d,follow=false}))' %
                      (address, previous), state=state)
-        for number, previous in state.get('workspaceMoves', {}).items():
+        for number, previous in (state.get('workspaceMoves', {}) if session_mode(state) == 'extend' else {}).items():
             workspace = next((w for w in workspaces if w['id'] == int(number)), None)
             if workspace and workspace['monitor'] == state['output']:
                 if previous not in {monitor['name'] for monitor in current}:
@@ -367,6 +497,8 @@ def cleanup(state):
             time.sleep(0.1)
     elif original_live:
         release_reservation(state)
+    if original_live and session_mode(state) == 'mirror':
+        unload_mirror(state)
     # Hyprland migrates any remaining windows/workspaces; never close user apps.
     for name in ('capture.sock', 'capture-control.sock', 'bridge-ready', 'bridge-status.json', 'wayvnc.conf'):
         (Path(state['runtime']) / name).unlink(missing_ok=True)
@@ -383,7 +515,9 @@ def serve():
     if STATE.exists():
         raise RuntimeError('Recovery state exists; run stop before starting again')
     preflight()
-    selected = capture_size(config())
+    value = config()
+    selected = capture_size(value)
+    selected_mode = configured_mode(value)
     width, height, fps = selected['width'], selected['height'], selected['fps']
     before = monitors()
     if not before:
@@ -402,7 +536,8 @@ def serve():
     runtime_root.mkdir(mode=0o700)
     state = {'supervisor': identity(os.getpid()), 'instance': os.environ['HYPRLAND_INSTANCE_SIGNATURE'],
              'output': output, 'runtime': str(runtime_root), 'session': secrets.token_hex(16),
-             'before': before, 'moves': {}, 'workspaceMoves': {}, 'captureSize': selected, 'ready': False}
+             'before': before, 'moves': {}, 'workspaceMoves': {}, 'captureSize': selected,
+             'mode': selected_mode, 'mirrorWorkspace': None, 'ready': False}
     state['parkingWorkspace'] = 'OMARCHY-DISPLAY-' + state['session']
     save(STATE, state)
     stopped = False
@@ -412,6 +547,8 @@ def serve():
     signal.signal(signal.SIGTERM, stop_signal)
     signal.signal(signal.SIGINT, stop_signal)
     try:
+        if selected_mode == 'mirror':
+            load_mirror(state)
         reserve_output(state, hypr('workspaces', state=state, json_output=True))
         hypr('eval', 'hl.monitor({output="%s",mode="%dx%d@%d",position="%dx%d",scale=1,mirror=""})' %
              (output, width, height, fps, left, top), state=state)
@@ -432,6 +569,16 @@ def serve():
         computer = next((monitor for monitor in before if monitor.get('focused')), before[0])
         hypr('eval', 'hl.dispatch(hl.dsp.focus({monitor=%s}))' %
              json.dumps(computer['name'], ensure_ascii=False), state=state)
+        if selected_mode == 'mirror':
+            workspaces = hypr('workspaces', state=state, json_output=True)
+            candidates = [item for item in workspaces if item['id'] > 0 and item['monitor'] in
+                          {monitor['name'] for monitor in before}]
+            initial = next((item for item in candidates
+                            if item['id'] == computer.get('activeWorkspace', {}).get('id')), None)
+            initial = initial or next(iter(candidates), None)
+            if not initial:
+                raise RuntimeError('Mirror needs an existing numbered workspace on the computer')
+            select_mirror(state, initial['id'])
         env = dict(os.environ, OMARCHY_TV_OUTPUT=output)
         capture_config = runtime_root / 'wayvnc.conf'
         capture_config.write_text('enable_auth=false\n')
@@ -471,6 +618,10 @@ def serve():
             if not current or current['mirrorOf'] != 'none' or current['width'] != width or \
                     current['height'] != height or current['scale'] != 1:
                 raise RuntimeError('Owned independent output disappeared, resized or became mirrored')
+            if selected_mode == 'mirror':
+                with action_lock():
+                    latest = load(STATE)
+                    require_mirror_health(latest)
             time.sleep(0.5)
     finally:
         with action_lock():
@@ -479,6 +630,7 @@ def serve():
                 latest = load(STATE)
                 state['moves'] = latest.get('moves', {})
                 state['workspaceMoves'] = latest.get('workspaceMoves', {})
+                state['mirrorWorkspace'] = latest.get('mirrorWorkspace')
             cleanup(state)
         (runtime_root / 'wayvnc.conf').unlink(missing_ok=True)
         try:
@@ -491,6 +643,8 @@ def start():
     preflight()
     if STATE.exists():
         raise RuntimeError('Desktop already active or recovery pending; use status / stop')
+    if configured_mode() == 'mirror':
+        mirror_receipt()
     detect(quiet=True)
     with (PRIVATE / 'supervisor.log').open('w') as log:
         daemon = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_serve'],
@@ -504,8 +658,8 @@ def start():
             state = load(STATE)
             if state['supervisor']['pid'] == daemon.pid and state.get('ready'):
                 selected = state['captureSize']
-                print('Independent %dx%d desktop prepared; frame cap %d fps. Use pair locally, workspace, status and stop.' %
-                      (selected['width'], selected['height'], selected['fps']))
+                print('%s %dx%d display prepared; frame cap %d fps. Use pair locally, workspace, status and stop.' %
+                      (session_mode(state).capitalize(), selected['width'], selected['height'], selected['fps']))
                 return
         time.sleep(0.1)
     kill_owned(daemon_identity)
@@ -539,6 +693,8 @@ def action_lock():
 
 def move(address):
     state = load(STATE)
+    if session_mode(state) != 'extend':
+        raise RuntimeError('Moving windows is only available in Extend mode; Mirror never moves windows')
     if not alive(state['supervisor']) or not state.get('ready'):
         raise RuntimeError('Start the desktop before moving a window')
     if not re.fullmatch('0x[0-9a-fA-F]+', address):
@@ -558,13 +714,37 @@ def dispatch_workspace(number, monitor, state):
          (number, json.dumps(monitor, ensure_ascii=False)), state=state)
 
 
-def workspace(number, recall=False):
+def select_mirror(state, number):
+    current = next((item for item in hypr('workspaces', state=state, json_output=True)
+                    if item['id'] == number), None)
+    if not current or number <= 0 or current['monitor'] == state['output'] or \
+            current['monitor'] not in {monitor['name'] for monitor in state['before']}:
+        raise RuntimeError('Mirror requires a numbered workspace on its original computer monitor')
+    hypr('eval', 'assert(hl.plugin.omarchy_display.mirror(%s,%d,%d))' %
+         (json.dumps(state['output']), number, state['captureSize']['fps']), state=state)
+    state['mirrorWorkspace'] = number
+    require_mirror_health(state)
+    save(STATE, state)
+    print('Workspace %d mirrored live on TV; its windows and computer workspace remain in place.' % number)
+
+
+def workspace(number, recall=False, explicit_mode=None):
     if not re.fullmatch('[1-9][0-9]{0,8}', number or ''):
         raise RuntimeError('Workspace must be a positive numeric ID')
     number = int(number)
     state = load(STATE)
     if not alive(state['supervisor']) or not state.get('ready'):
         raise RuntimeError('Start the desktop before sending or recalling a workspace')
+    active_mode = session_mode(state)
+    if explicit_mode is not None and explicit_mode != active_mode:
+        raise RuntimeError('This command requires running %s mode; save mode and explicitly stop/start first' %
+                           explicit_mode.capitalize())
+    if active_mode == 'mirror':
+        if recall:
+            raise RuntimeError('Recall is only available in Extend mode; mirrored workspaces were never moved')
+        require_mirror_health(state)
+        select_mirror(state, number)
+        return
     workspaces = hypr('workspaces', state=state, json_output=True)
     current = next((item for item in workspaces if item['id'] == number), None)
     if not current:
@@ -653,7 +833,10 @@ def workspace_summary(state=None):
         items = hypr('workspaces', state=state, json_output=True, timeout=1)
         return sorted([{'id': item['id'], 'windows': item['windows'],
                         'onTV': bool(state and item['monitor'] == state['output']),
-                        'recallAvailable': bool(state and str(item['id']) in state.get('workspaceMoves', {}))}
+                        'mirrored': bool(state and session_mode(state) == 'mirror' and
+                                         state.get('mirrorWorkspace') == item['id']),
+                        'recallAvailable': bool(state and session_mode(state) == 'extend' and
+                                                str(item['id']) in state.get('workspaceMoves', {}))}
                        for item in items if type(item.get('id')) is int and item['id'] > 0 and
                        type(item.get('windows')) is int and item['windows'] >= 0], key=lambda item: item['id'])
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
@@ -697,6 +880,8 @@ def tv_workspace(state):
     if not state or os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') != state['instance']:
         return None
     try:
+        if session_mode(state) == 'mirror':
+            return require_mirror_health(state)['workspace']
         target = next((item for item in hypr('monitors', state=state, json_output=True, timeout=1)
                        if item['name'] == state['output']), None)
         number = target.get('activeWorkspace', {}).get('id') if target else None
@@ -709,18 +894,24 @@ def status():
     result = {'schemaVersion': 1, 'state': 'stopped', 'running': False, 'clients': 0,
               'output': None, 'message': 'Display is stopped.', 'viewOnly': True, 'audio': False,
               'width': None, 'height': None, 'fps': None, 'workspaces': [], 'receiver': None,
-              'sizing': sizing_status(), 'tvWorkspace': None, 'panel': panel_report()}
+              'sizing': sizing_status(), 'tvWorkspace': None, 'tvWorkspaceMirror': None, 'panel': panel_report(),
+              'mode': None, 'configuredMode': configured_mode(), 'modeRequiresRestart': False}
     if not STATE.exists():
         result['workspaces'] = workspace_summary()
         return result
     try:
         state = load(STATE)
+        running = bool(alive(state.get('supervisor')))
+        result['running'] = running
+        active_mode = session_mode(state)
+        result.update(mode=active_mode, modeRequiresRestart=active_mode != result['configuredMode'])
+        if active_mode == 'mirror' and state.get('ready'):
+            result['tvWorkspaceMirror'] = require_mirror_health(state)['workspace']
+            result['tvWorkspace'] = result['tvWorkspaceMirror']
         selected = capture_size({'capture': state['captureSize']})
         result.update(width=selected['width'], height=selected['height'], fps=selected['fps'],
                       workspaces=workspace_summary(state), sizing=sizing_status(current=selected),
-                      tvWorkspace=tv_workspace(state))
-        running = bool(alive(state.get('supervisor')))
-        result['running'] = running
+                      tvWorkspace=result['tvWorkspaceMirror'] if active_mode == 'mirror' else tv_workspace(state))
         output = state.get('output', '')
         if re.fullmatch('OMARCHY-TV-[0-9a-f]{8}', output):
             result['output'] = output
@@ -749,7 +940,7 @@ def status():
         result.update(receiver=receiver, sizing=sizing_status(receiver, selected))
         result.update(state='sharing' if clients else 'ready', clients=clients,
                       message='Sharing the independent display.' if clients else 'Ready; no viewers connected.')
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
         result.update(state='error', clients=0, message='Display needs attention; run stop to recover.')
     return result
 
@@ -760,6 +951,9 @@ def show_status(as_json=False):
         print(json.dumps(value, separators=(',', ':')))
     else:
         print(value['state'] + ': ' + value['message'])
+        print('Mode: %s; next start: %s%s' %
+              ((value['mode'] or 'stopped').capitalize(), value['configuredMode'].capitalize(),
+               ' (explicit stop/start required)' if value['modeRequiresRestart'] else ''))
         if value['output']:
             print('Output: ' + value['output'] + '; viewers: ' + str(value['clients']))
         if value['width']:
@@ -767,7 +961,8 @@ def show_status(as_json=False):
         print('Displayed TV workspace: ' + str(value['tvWorkspace'] or 'none'))
         for item in value['workspaces']:
             print('Workspace %d: %d windows%s' %
-                  (item['id'], item['windows'], ' (on TV)' if item['onTV'] else ''))
+                  (item['id'], item['windows'], ' (mirrored live)' if item['mirrored'] else
+                   ' (on TV)' if item['onTV'] else ''))
         selected = value['sizing']
         print('Next start: %dx%d; frame cap %d fps (%s)' %
               (selected['width'], selected['height'], selected['fps'], selected['preset']))
@@ -810,10 +1005,12 @@ def menu(address=None):
     address = address or menu_window()
     while True:
         print('\nOmarchy Display — view only, no audio')
-        show_status()
+        with action_lock():
+            show_status()
         print('\n1  Start display\n2  Stop display\n3  Show private pairing details'
-              '\n4  Move previously focused window\n5  Status\n6  Select capture size for next start'
-              '\n7  Send numbered workspace\n8  Recall numbered workspace\nq  Close')
+              '\n4  Move previously focused window (Extend only)\n5  Status\n6  Select capture size for next start'
+              '\n7  Select numbered workspace (current mode)\n8  Recall numbered workspace (Extend only)'
+              '\n9  Save Mirror/Extend mode for next start\nq  Close')
         choice = input('Choose: ').strip().lower()
         if choice in ('q', ''):
             return
@@ -841,6 +1038,8 @@ def menu(address=None):
                 number = input('Workspace number: ').strip()
                 with action_lock():
                     workspace(number, recall=choice == '8')
+            elif choice == '9':
+                mode(input('Next-start mode (mirror, extend): ').strip().lower())
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
             print('Action failed. Check private configuration/session logs locally.')
 
@@ -851,7 +1050,7 @@ def main():
     private_directory(CONFIG_DIR)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['init', 'pair', 'rotate', 'start', 'stop', 'status', 'move',
-                                          'workspace', 'recall', 'menu', 'size', 'detect', '_serve'])
+                                          'workspace', 'mirror', 'extend', 'mode', 'recall', 'menu', 'size', 'detect', '_serve'])
     parser.add_argument('address', nargs='?')
     parser.add_argument('--json', action='store_true', help='Machine-readable status, never pairing details')
     parser.add_argument('--window', help='Window address captured before opening the menu')
@@ -875,19 +1074,24 @@ def main():
         save(CONFIG, value)
         print('Pairing secret rotated; enter the new secret on the receiver.')
     elif args.command == 'status':
-        show_status(args.json)
+        with action_lock():
+            show_status(args.json)
     elif args.command == 'menu':
         menu(args.window)
     elif args.command == 'size':
         size(args.address, args.fps)
+    elif args.command == 'mode':
+        with action_lock():
+            mode(args.address)
     elif args.command == 'move':
         if not args.address:
             raise RuntimeError('move requires a real window address from hyprctl clients -j')
         with action_lock():
             move(args.address)
-    elif args.command in ('workspace', 'recall'):
+    elif args.command in ('workspace', 'mirror', 'extend', 'recall'):
         with action_lock():
-            workspace(args.address, recall=args.command == 'recall')
+            workspace(args.address, recall=args.command == 'recall',
+                      explicit_mode=args.command if args.command in ('mirror', 'extend') else None)
     else:
         {'start': start, 'stop': stop, '_serve': serve}[args.command]()
 

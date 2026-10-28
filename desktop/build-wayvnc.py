@@ -21,7 +21,7 @@ SUBPROJECTS = {
     'aml': '685035c9830aa89df02a43df89b644690bd885f5',  # v1.0.0
     'neatvnc': '783437adc56c2d7ce2cac1ec584acad798594267',  # v1.0.3
 }
-TOOL_VERSIONS = {'meson': '1.12.1', 'ninja': '1.13.0'}
+TOOL_VERSIONS = {'meson': '1.12.1', 'ninja': '1.13.0', 'cmake': '3.31.6'}
 PKG_REQUIREMENTS = {
     'wayland-client': None, 'pixman-1': None, 'libdrm': None,
     'xkbcommon': '1.0.0', 'jansson': None, 'zlib': None, 'libturbojpeg': None,
@@ -64,7 +64,7 @@ def private_tools():
         subprocess.run([sys.executable, '-m', 'venv', str(directory)], check=True, env=env)
     probe = subprocess.run([str(python), '-c',
         'import importlib.metadata as m,json; '
-        'print(json.dumps({name:m.version(name) for name in ("meson","ninja")}))'],
+        'print(json.dumps({name:m.version(name) for name in ("meson","ninja","cmake")}))'],
         capture_output=True, text=True, env=env)
     installed = json.loads(probe.stdout) if probe.returncode == 0 else {}
     if installed != TOOL_VERSIONS:

@@ -16,3 +16,4 @@ __pycache__/
 profiles*.xml
 *.log
 .DS_Store
+mirror-plugin/build/

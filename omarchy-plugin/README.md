@@ -19,12 +19,22 @@ Sharing. Host messages, output names, stderr, and pairing details are not shown.
 The last completed status can remain visible until the next poll finishes.
 
 Left-click opens the native Omarchy control panel. Start and Stop are explicit
-actions. The numbered **TV workspace** stays selected independently of physical
-computer workspace switches. Send selects/moves a workspace onto the TV output;
-Bring back returns it to the computer. This does not promise simultaneous
-duplicated rendering on both outputs.
-Bring back is enabled only where the host has recorded an original monitor;
-the virtual output's automatically created workspace has no such destination.
+actions. **Mirror** renders the same live numbered workspace on the computer
+and TV without transferring its windows; switching computer workspaces does not
+change the selected TV workspace. It requires the owned compositor plugin and
+the exact supported Hyprland ABI; unavailable or mismatched Mirror fails, never
+silently switches to Extend. **Extend** retains the independent TV workspace
+transfer behavior. Its Bring back action returns a workspace only to a recorded
+original monitor; recall is not offered in Mirror.
+
+The panel's Mirror/Extend mode buttons save **next-start** configuration only.
+They never change the running session or restart it. Pending mode changes require
+an explicit Stop, then Start. Fresh configurations prefer Mirror; legacy settings
+and running v1.1 sessions without a mode remain honestly classified as Extend.
+The workspace row action is labelled Mirror or Extend for the running mode;
+SUPER+CTRL+ALT+1..9/0 selects workspace 1..10 using that same current mode.
+Installer migration accepts the exact owned v1.1 shortcut block and backs it up,
+but refuses edited or unrelated bindings.
 
 Resolution (720p, 1080p, or API-reported native panel size) and FPS (15, 30, 60)
 are saved explicitly for the next start. Saving never restarts the host; pending
@@ -49,12 +59,22 @@ omarchy-display status --json
 omarchy-shell shell rescanPlugins
 ```
 
+When updating controls that the shell has already loaded, run
+`omarchy-restart-shell` while unlocked to replace cached QML components. This
+restarts the shell without resetting its settings; `omarchy-refresh-shell`
+resets settings and is not the update command.
+
 The installer/main integration check should inspect the actual bar while
 stopped, ready without a viewer, sharing with an authenticated viewer, and after
 the viewer disconnects. Check native popup opening, Escape/Tab navigation,
-Start/Stop, numbered workspace Send/Bring back, and independent computer
-workspace switching. Check sizing save leaves the current session uninterrupted,
+Start/Stop, numbered workspace Mirror/Extend/Bring back, and independent computer
+workspace switching. Check mode save leaves the active mode unchanged until an
+explicit Stop/Start, Mirror leaves window/workspace assignments and focus intact,
+and unavailable plugin/ABI mismatch cannot fall back to Extend.
+Check sizing save leaves the current session uninterrupted,
 requires explicit Stop/Start, and keeps receiver viewport separate from panel
 dimensions. Check Pairing opens only after an explicit click and failed/malformed
-status cannot retain Sharing beyond the next poll deadline. No build or runtime
-verification was performed while creating this widget.
+status cannot retain Sharing beyond the next poll deadline. The installer stages
+and builds the compositor plugin rootlessly, recording its SHA-256 and exact ABI;
+the host loads only that verified payload for Mirror and clears it before capture
+cleanup. The supervisor fails closed if plugin health loses the selection.
