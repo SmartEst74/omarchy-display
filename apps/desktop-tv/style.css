@@ -1,0 +1,17 @@
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #080b0f; color: #f4f6f8; font-family: sans-serif; }
+* { box-sizing: border-box; }
+#stage { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#desktop { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+.desktop-frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; }
+#setup { position: absolute; top: 90px; left: 310px; width: 1300px; min-height: 890px; padding: 48px 64px; background: #171d25; border: 2px solid #343f4d; border-radius: 20px; }
+h1 { font-size: 54px; margin: 0 0 20px; }
+p { font-size: 27px; line-height: 1.45; margin: 16px 0 24px; }
+label { display: block; font-size: 27px; margin: 28px 0 12px; }
+input { display: block; width: 100%; height: 74px; padding: 12px 20px; color: #fff; background: #080e16; font-size: 28px; border: 3px solid #566475; border-radius: 9px; }
+button { margin: 28px 22px 0 0; padding: 15px 36px; min-height: 72px; color: #fff; background: #303b49; font-size: 29px; border: 3px solid #6c7a8c; border-radius: 9px; }
+input:focus, button:focus { outline: 4px solid #b8e0ff; outline-offset: 4px; }
+button:disabled { opacity: .5; }
+#status { min-height: 42px; color: #c3e2ff; font-size: 26px; margin-bottom: 8px; }
+.hint { color: #b0bbc9; font-size: 23px; margin-bottom: 0; }
+#banner { position: absolute; bottom: 30px; left: 460px; width: 1000px; padding: 16px 28px; text-align: center; color: #fff; background: #17202d; border: 2px solid #607286; font-size: 27px; border-radius: 9px; }
+.hidden { display: none !important; }

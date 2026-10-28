@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ws: wss: http: https:; object-src 'none'">
+  <title>Omarchy Display</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage">
+    <div id="desktop" aria-label="Live independent Omarchy desktop"></div>
+    <section id="setup" aria-labelledby="heading">
+      <h1 id="heading">Omarchy Display</h1>
+      <p>A separate Linux desktop, controlled with your computer's keyboard and mouse. Pair once; this TV remembers successful pairing.</p>
+      <form id="connection">
+        <label for="endpoint">Desktop bridge WebSocket endpoint</label>
+        <input id="endpoint" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ws://your-host:6080/desktop">
+        <label for="secret">Pairing secret (32 hexadecimal characters)</label>
+        <input id="secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
+        <div id="actions"><button id="connect" type="submit" disabled>Connect</button><button id="forget" type="button" disabled>Forget pairing</button><button id="fit-mode" type="button">Fit: Screen</button><button id="leave" type="button">Exit</button></div>
+      </form>
+      <p id="status" role="status" aria-live="polite">Preparing desktop receiver…</p>
+      <p class="hint">Start sharing from the Omarchy bar panel. Pairing details are available locally with omarchy-display pair. Back disconnects; Back again exits. Plain WS is for an isolated trusted LAN only.</p>
+    </section>
+    <div id="banner" class="hidden" role="status">Connected · Back to disconnect · View only</div>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>

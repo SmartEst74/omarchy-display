@@ -1,0 +1,9 @@
+{
+  "name": "omarchy-tv-display",
+  "private": true,
+  "version": "1.1.0",
+  "description": "Output-locked private capture with bounded authenticated desktop-frame delivery",
+  "dependencies": {
+    "ws": "8.22.0"
+  }
+}

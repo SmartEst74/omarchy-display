@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns:tizen="http://tizen.org/ns/widgets" xmlns="http://www.w3.org/ns/widgets" id="https://jellyfin.org/OmarchyJF1" version="12.2.0" viewmodes="fullscreen">
+    <access origin="*" subdomains="true"/>
+    <tizen:application id="OmarchyJF1.Jellyfin" package="OmarchyJF1" required_version="3.0"/>
+    <author href="https://jellyfin.org">Jellyfin contributors; Omarchy Display compatibility integration</author>
+    <content src="index.html"/>
+    <description>Jellyfin TV client with bundled web interface and Samsung native HTML5 playback.</description>
+    <feature name="http://tizen.org/feature/screen.size.all"/>
+    <icon src="icon.png"/>
+    <name>Jellyfin</name>
+    <tizen:metadata key="http://tizen.org/metadata/app_ui_type/base_screen_resolution" value="fullscreen"/>
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://developer.samsung.com/privilege/productinfo"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:profile name="tv"/>
+    <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>
