@@ -25,9 +25,9 @@ BarWidget {
 
   readonly property string statusDescription: {
     switch (displayState) {
-      case "stopped": return "Stopped — virtual display is off."
+      case "stopped": return "Stopped — display capture is off."
       case "starting": return "Starting or checking status — sharing is not confirmed."
-      case "ready": return "Ready — virtual output is available; no TV viewer is connected."
+      case "ready": return "Ready — capture is available; no TV viewer is connected."
       case "sharing": return "Sharing — " + clients + " authenticated TV viewer" + (clients === 1 ? " is" : "s are") + " connected to the capture backend."
       default: return "Error — display status is unavailable or the host reported an error; sharing is not confirmed."
     }
@@ -134,7 +134,8 @@ BarWidget {
         || (value.state === "stopped" && value.running)
         || (value.state !== "sharing" && value.clients !== 0)
         || ((value.state === "ready" || value.state === "sharing")
-          && (!value.running || typeof value.output !== "string" || value.output.length === 0))
+          && (!value.running || (value.mode === "mirror" ? value.output !== null
+            : typeof value.output !== "string" || value.output.length === 0)))
         || (value.state === "sharing" && value.clients === 0)
         || !validDetails(value)) {
       failStatus()
@@ -234,7 +235,7 @@ BarWidget {
     active: root.displayState === "sharing" || root.displayState === "error"
     activeColor: root.stateColor
     tooltipText: "Omarchy Display\n" + root.statusDescription
-      + "\nIndependent TV workspace · view-only · no audio\nClick for controls; pairing requires an explicit action."
+      + "\nView-only desktop · no input forwarding · no audio\nClick for controls; pairing requires an explicit action."
     onTooltipTextChanged: {
       if (tooltipHovered && root.bar) root.bar.showTooltip(button, tooltipText)
     }

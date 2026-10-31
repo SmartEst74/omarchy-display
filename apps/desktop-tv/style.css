@@ -1,9 +1,8 @@
-html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #080b0f; color: #f4f6f8; font-family: sans-serif; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; color: #f4f6f8; font-family: sans-serif; }
 * { box-sizing: border-box; }
 #stage { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
-#desktop { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000; }
-.desktop-frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; }
-#setup { position: absolute; top: 90px; left: 310px; width: 1300px; min-height: 890px; padding: 48px 64px; background: #171d25; border: 2px solid #343f4d; border-radius: 20px; }
+#desktop { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; }
+#setup { position: absolute; top: 40px; left: 310px; width: 1300px; max-height: 1000px; overflow-y: auto; padding: 36px 64px; background: #171d25; border: 2px solid #343f4d; border-radius: 20px; }
 h1 { font-size: 54px; margin: 0 0 20px; }
 p { font-size: 27px; line-height: 1.45; margin: 16px 0 24px; }
 label { display: block; font-size: 27px; margin: 28px 0 12px; }

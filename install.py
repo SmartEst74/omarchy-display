@@ -201,7 +201,7 @@ def uninstall(purge):
 
 
 def dependencies():
-    missing = [name for name in ('cc', 'c++', 'git', 'node', 'npm', 'ffmpeg', 'pkg-config', 'wayland-scanner', 'hyprctl')
+    missing = [name for name in ('cc', 'c++', 'git', 'node', 'npm', 'pkg-config', 'wayland-scanner', 'hyprctl')
                if not shutil.which(name)]
     if sys.version_info < (3, 10):
         missing.append('Python >= 3.10')
@@ -209,7 +209,7 @@ def dependencies():
         missing.append('Python venv + ensurepip')
     libraries = ('hyprland', 'wayland-client', 'wayland-server', 'wayland-protocols', 'pixman-1',
                  'libdrm', 'libinput', 'libudev', 'pangocairo', 'egl', 'glesv2',
-                 'xkbcommon', 'jansson', 'zlib', 'libturbojpeg')
+                 'xkbcommon', 'jansson', 'zlib', 'gbm', 'libturbojpeg')
     if shutil.which('pkg-config'):
         for name in libraries:
             if subprocess.run(['pkg-config', '--exists', name]).returncode:
@@ -281,8 +281,9 @@ def install():
     try:
         (stage / 'desktop').mkdir()
         # Deliberately enumerate public source: never copy checkout state or credentials.
-        for name in ('display.py', 'bridge.cjs', 'jpeg-producer.cjs', 'jpeg-encoder.py',
-                     'build-wayvnc.py', 'capture-tools.txt', 'package.json', 'keybindings.py', 'package-lock.json'):
+        for name in ('display.py', 'bridge.cjs', 'region-producer.cjs', 'region-encoder.c',
+                     'mirror-capture.c', 'mirror-wire.h', 'build-wayvnc.py', 'capture-tools.txt',
+                     'package.json', 'keybindings.py', 'package-lock.json'):
             shutil.copyfile(ROOT / 'desktop' / name, stage / 'desktop' / name)
         (stage / 'apps/desktop-tv').mkdir(parents=True)
         for name in ('index.html', 'main.js', 'style.css', 'icon.png'):
@@ -296,14 +297,15 @@ def install():
         subprocess.run(['npm', 'ci', '--no-audit', '--no-fund'], cwd=stage / 'desktop', env=env, check=True)
         subprocess.run([sys.executable, str(stage / 'desktop/build-wayvnc.py'), '--dest', str(CACHE / 'capture')], check=True)
         (stage / 'capture').mkdir()
-        shutil.copyfile(CACHE / 'capture/wayvnc-build/wayvnc', stage / 'capture/wayvnc')
-        (stage / 'capture/wayvnc').chmod(0o700)
+        for name in ('wayvnc', 'mirror-capture'):
+            shutil.copyfile(CACHE / 'capture/wayvnc-build' / name, stage / 'capture' / name)
+            (stage / 'capture' / name).chmod(0o700)
         shutil.copyfile(CACHE / 'capture/capture-build.json', stage / 'capture/capture-build.json')
         stage_mirror(stage)
         # Bytecode goes in the installed payload, never into the source checkout.
         subprocess.run([sys.executable, '-m', 'compileall', '-q', str(stage / 'desktop/display.py'),
                         str(stage / 'desktop/build-wayvnc.py'), str(stage / 'desktop/keybindings.py'),
-                        str(stage / 'desktop/jpeg-encoder.py'), str(stage / 'install.py')], check=True)
+                        str(stage / 'install.py')], check=True)
         plugin_files = (previous or {}).get('pluginFiles', {})
         plugin_stage = stage / 'omarchy-plugin'
         shutil.copytree(ROOT / 'omarchy-plugin', plugin_stage)
