@@ -7,10 +7,14 @@ point. Install through the project installer; this directory is not a standalone
 Quickshell configuration.
 
 The monitor stays visible when stopped (dimmed). A hollow accent dot means the
-virtual output is ready **without a TV viewer**; a filled accent dot means the
+display capture is ready **without a TV viewer**; a filled accent dot means the
 host reports an authenticated viewer on its capture backend. An exclamation
 mark means error; an ellipsis means starting/checking. Hover for a text status.
 All states are view-only with no audio.
+
+Mirror readiness has no output name: it uses private offscreen GPU frames.
+Extend readiness requires its named independent output. Both are valid Ready
+and Sharing states; the bar must not mistake output-free Mirror for an error.
 
 The widget invokes the installed `omarchy-display status --json` every five
 seconds, with one process per widget instance at a time and a four-second

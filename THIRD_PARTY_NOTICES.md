@@ -40,17 +40,51 @@ All three pinned upstream `COPYING` files were inspected; they contain this noti
 > TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 > THIS SOFTWARE.
 
-The builder changes wayvnc `src/main.c` to lock capture to the selected output and fail closed if it disappears or a switch would capture another output. It does not claim to author wayvnc or neatvnc. Meson 1.12.1, Ninja 1.13.0, and [CMake 3.31.6](https://pypi.org/project/cmake/3.31.6/) build tools use hash-pinned wheel requirements in a private environment; their own upstream licenses/notices remain applicable. Host library versions are recorded in the capture build receipt.
+The builder changes wayvnc `src/main.c` to lock Extend capture to the selected output and fail closed if it disappears or switches. Mirror instead uses the project's `desktop/mirror-capture.c`, importing the compositor plugin's offscreen DMA-BUF frames and GPU fences without a desktop output. Both link pinned neatvnc with `desktop/region-encoder.c` as the private ODR3 encoder: GLES 3.1 exact tile comparison, uniform-colour classification, GPU JPEG-atlas packing and TurboJPEG compression. Private AML patches provide explicit worker join/work-retirement ordering before capture resources are destroyed. These changes do not replace or claim authorship of upstream capture, GBM, event-loop or JPEG implementations. Exact owned-source hashes, feature/patch versions and host library versions are recorded in build receipts. DMA-BUF/GBM and JPEG are enabled; H.264/V4L2 are disabled. Meson 1.12.1, Ninja 1.13.0 and [CMake 3.31.6](https://pypi.org/project/cmake/3.31.6/) use hash-pinned wheels in a private environment; their upstream licenses/notices remain applicable.
 
-## Current image receiver and bridge
+## Current image-region receiver and bridge
 
-The desktop receiver uses static ES5 JavaScript and native browser image decoding. It does not bundle or require noVNC, JSBI, core-js, ResizeObserver, Babel or webpack. Its package consists of `config.xml`, `index.html`, `icon.png`, `main.js`, `style.css` and the required MIT `LICENSE` notice; there is no npm receiver-bundle build step. The bridge retains **ws 8.22.0, MIT**, with the [published package LICENSE](https://unpkg.com/ws@8.22.0/LICENSE): copyright Einar Otto Stangvik, Arnout Kazemier, Luigi Pinca and contributors.
+The desktop receiver uses static ES5 JavaScript, native browser image loading and WebGL. It does not bundle or require noVNC, JSBI, core-js, ResizeObserver, Babel, webpack or Samsung AVPlay. Its package consists of `config.xml`, `index.html`, `icon.png`, `main.js`, `style.css` and the required MIT `LICENSE` notice; there is no npm receiver-bundle build step. The bridge retains **ws 8.22.0, MIT**, with the [published package LICENSE](https://unpkg.com/ws@8.22.0/LICENSE): copyright Einar Otto Stangvik, Arnout Kazemier, Luigi Pinca and contributors.
 
-The host image encoder uses the caller's installed FFmpeg executable, not an FFmpeg binary copied into this repository. FFmpeg's applicable LGPL/GPL terms depend on that executable's build configuration and linked components; retain the distributor's notices and consult the [upstream legal documentation](https://ffmpeg.org/legal.html) before redistributing an encoder build. No universal FFmpeg build license is asserted here.
+Native capture links the host's **libjpeg-turbo** TurboJPEG API; the verified host uses version 3.2.0. FFmpeg/VAAPI encoding and native-video muxing are no longer desktop-stream dependencies. The host provides EGL/GLES, GBM and DRM libraries and drivers; their upstream/distributor notices remain applicable.
+
+### libjpeg-turbo notices
+
+This software is based in part on the work of the Independent JPEG Group.
+
+libjpeg-turbo's [license documentation](https://github.com/libjpeg-turbo/libjpeg-turbo/blob/3.2.0/LICENSE.md) requires the compatible IJG and Modified BSD terms. Preserve its [README.ijg](https://github.com/libjpeg-turbo/libjpeg-turbo/blob/3.2.0/README.ijg) when redistributing the library's source. The TurboJPEG Modified BSD notice follows:
+
+> Copyright (C) 2009-2026 D. R. Commander
+>
+> Copyright (C) 2018-2023 Randy <randy408@protonmail.com>
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are met:
+>
+> - Redistributions of source code must retain the above copyright notice,
+>   this list of conditions and the following disclaimer.
+> - Redistributions in binary form must reproduce the above copyright notice,
+>   this list of conditions and the following disclaimer in the documentation
+>   and/or other materials provided with the distribution.
+> - Neither the name of the libjpeg-turbo Project nor the names of its
+>   contributors may be used to endorse or promote products derived from this
+>   software without specific prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS",
+> AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+> IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+> ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+> LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+> CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+> SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+> INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+> CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+> POSSIBILITY OF SUCH DAMAGE.
 
 ## Historical noVNC receiver provenance
 
-The following exact versions and licenses were inspected in the former receiver builder and its lockfile. They document the original integration and source adaptation, **not the current receiver's runtime dependency list**. The noVNC bundle and its browser-build tooling have been superseded by the native-image receiver. Jellyfin's independently pinned dependency tree and notices are unaffected.
+The following exact versions and licenses were inspected in the former receiver builder and its lockfile. They document the original integration and source adaptation, **not the current receiver's runtime dependency list**. The noVNC bundle and its browser-build tooling have been superseded by the image-region receiver. Jellyfin's independently pinned dependency tree and notices are unaffected.
 
 | Component | Exact direct version | License and inspected source |
 | --- | --- | --- |
@@ -65,7 +99,7 @@ The following exact versions and licenses were inspected in the former receiver 
 | [Acorn](https://github.com/acornjs/acorn) | 8.19.0 | **MIT**, [package license](https://unpkg.com/acorn@8.19.0/LICENSE); version/license recorded by the lockfile |
 | [ws](https://github.com/websockets/ws) | 8.22.0 | **MIT**, [published package LICENSE](https://unpkg.com/ws@8.22.0/LICENSE); copyright Einar Otto Stangvik, Arnout Kazemier, Luigi Pinca and contributors |
 
-noVNC's upstream `LICENSE.txt` also identifies separately licensed material: `core/des.js` has BSD-style notices and vendored pako is MIT; upstream HTML/CSS, fonts and artwork have separate BSD, OFL and CC-BY-SA terms. The former receiver builder preserved upstream noVNC license/AUTHORS files, vendored notices and bundled dependency licenses. These historical assets are not required by the current native-image receiver. Do not assume a separately distributed noVNC package is MPL-only.
+noVNC's upstream `LICENSE.txt` also identifies separately licensed material: `core/des.js` has BSD-style notices and vendored pako is MIT; upstream HTML/CSS, fonts and artwork have separate BSD, OFL and CC-BY-SA terms. The former receiver builder preserved upstream noVNC license/AUTHORS files, vendored notices and bundled dependency licenses. These historical assets are not required by the current image-region receiver. Do not assume a separately distributed noVNC package is MPL-only.
 
 The former receiver integration used ES5/Chromium-47-targeted Babel/webpack output, a final ES5 grammar check, core-js and ResizeObserver support, a legacy CustomEvent fallback, and replacement of native BigInt syntax with real JSBI arithmetic. Its BigInt source excerpt was an **MPL-2.0 adaptation of noVNC's `core/crypto/bigint.js`**, originating at [commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e`](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/crypto/bigint.js). This is retained historical attribution, not a claim that noVNC arithmetic or source excerpts ship in the current receiver.
 

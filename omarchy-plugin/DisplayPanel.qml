@@ -166,14 +166,14 @@ Panel {
               focusable: true
               bordered: true
               enabled: !root.busy && (!root.status || !root.status.running)
-              onClicked: root.runAction(["start"], "Starting virtual output…")
+              onClicked: root.runAction(["start"], "Starting display capture…")
             }
             Button {
               text: "Stop"
               focusable: true
               bordered: true
               enabled: !root.busy && (!root.status || root.status.running)
-              onClicked: root.runAction(["stop"], "Stopping virtual output…")
+              onClicked: root.runAction(["stop"], "Stopping display capture…")
             }
             Button {
               text: "Pairing"
@@ -233,7 +233,7 @@ Panel {
           PanelText {
             text: root.status && (root.status.mode || root.status.configuredMode) === "extend"
               ? "Extend transfers the selection to TV; Bring back returns it to its recorded computer monitor."
-              : "Mirror shows the same live workspace on both screens, leaving every window in place. Recall is unnecessary."
+              : "Mirror copies the selected workspace without moving windows or adding a desktop output. The cursor appears only on the selected source."
           }
           PanelText {
             visible: !root.status || root.status.workspaces.length === 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Own one temporary Hyprland output and its private, view-only capture path."""
+"""Own private view-only Mirror capture or one temporary Extend output."""
 import argparse
 import ctypes
 import fcntl
@@ -27,6 +27,7 @@ PRIVATE = xdg('XDG_STATE_HOME', '.local/state') / 'omarchy-display'
 CONFIG = CONFIG_DIR / 'config.json'
 STATE = PRIVATE / 'state.json'
 CAPTURE = ROOT / 'capture/wayvnc'
+MIRROR_CAPTURE = ROOT / 'capture/mirror-capture'
 COMMIT = 'bb837459c75fd3c267d48af170ac7ed2566f67e5'
 MIRROR_COMMIT = 'efb50993780079460b0cbed1363e2166a2de1d9f'
 MIRROR_NAME = 'omarchy-workspace-mirror'
@@ -81,12 +82,13 @@ def mirror_receipt(state=None):
 def mirror_status(state):
     report = hypr('omarchy-display-mirror', state=state, json_output=True, timeout=2)
     if not isinstance(report, dict) or type(report.get('active')) is not bool or \
-            not {'active', 'workspace', 'output', 'locked'} <= report.keys() or \
+            not {'active', 'workspace', 'source', 'locked', 'width', 'height', 'minimumPtsUs'} <= report.keys() or \
             type(report.get('locked')) is not bool or \
             not (report.get('workspace') is None or type(report.get('workspace')) is int and report['workspace'] > 0) or \
-            not (report.get('output') is None or isinstance(report.get('output'), str)):
+            not (report.get('source') is None or isinstance(report.get('source'), str)) or \
+            any(type(report.get(key)) is not int or report[key] < 0 for key in ('width', 'height', 'minimumPtsUs')):
         raise RuntimeError('Mirror plugin status is unavailable or incompatible')
-    if report['active'] and (report['workspace'] is None or report['output'] is None):
+    if report['active'] and (report['workspace'] is None or report['source'] is None):
         raise RuntimeError('Mirror plugin reported an invalid active selection')
     return report
 
@@ -95,8 +97,9 @@ def require_mirror_health(state):
     report = mirror_status(state)
     if report['locked']:
         raise RuntimeError('Computer session locked; Mirror stopped. Unlock and start the display again.')
-    if not report['active'] or report['output'] != state['output'] or \
-            report['workspace'] != state.get('mirrorWorkspace'):
+    if not report['active'] or report['source'] != state['mirrorSource'] or \
+            report['workspace'] != state.get('mirrorWorkspace') or \
+            report['width'] != state['captureSize']['width'] or report['height'] != state['captureSize']['height']:
         raise RuntimeError('Mirror plugin lost the selected workspace; stream stopped')
     return report
 
@@ -128,7 +131,7 @@ def clear_mirror(state):
         return
     hypr('eval', 'assert(hl.plugin.omarchy_display.stop())', state=state)
     report = mirror_status(state)
-    if report['active'] or report['workspace'] is not None or report['output'] is not None:
+    if report['active'] or report['workspace'] is not None or report['source'] is not None:
         raise RuntimeError('Mirror plugin did not clear its selection; stream closed for recovery')
 
 
@@ -368,19 +371,24 @@ def detect(quiet=False):
 
 def preflight():
     config()
-    for program in ('hyprctl', 'node', 'ffmpeg'):
+    for program in ('hyprctl', 'node'):
         if not shutil.which(program):
             raise RuntimeError('Missing dependency: ' + program)
     if not (ROOT / 'desktop/node_modules/ws/package.json').exists():
         raise RuntimeError('Installed WebSocket dependency is missing; rerun ./install.sh')
-    for name in ('desktop/jpeg-producer.cjs', 'desktop/jpeg-encoder.py',
+    for name in ('desktop/region-producer.cjs', 'desktop/region-encoder.c', 'desktop/mirror-wire.h',
                  'apps/desktop-tv/index.html', 'apps/desktop-tv/main.js'):
         if not (ROOT / name).is_file():
-            raise RuntimeError('Installed JPEG transport payload is incomplete; rerun ./install.sh')
+            raise RuntimeError('Installed GPU streaming payload is incomplete; rerun ./install.sh')
     receipt = load(ROOT / 'capture/capture-build.json')
+    features = receipt.get('features', {})
     if receipt.get('commit') != COMMIT or receipt.get('output_lock_patch') != 1 or \
-            receipt.get('sha256') != hashlib.sha256(CAPTURE.read_bytes()).hexdigest():
-        raise RuntimeError('Capture binary is not the pinned output-locked build')
+            receipt.get('regions_patch') != 6 or features.get('capture') != 'dmabuf' or \
+            features.get('gpu_regions') is not True or features.get('mirror_dmabuf') is not True or \
+            features.get('gpu_jpeg_atlas') is not True or \
+            receipt.get('sha256') != hashlib.sha256(CAPTURE.read_bytes()).hexdigest() or \
+            receipt.get('mirror_sha256') != hashlib.sha256(MIRROR_CAPTURE.read_bytes()).hexdigest():
+        raise RuntimeError('Capture binaries are not the pinned GPU builds')
     if not os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') or not os.environ.get('WAYLAND_DISPLAY'):
         raise RuntimeError('Run inside the target Hyprland desktop session')
 
@@ -439,6 +447,8 @@ def release_reservation(state):
          (key, key), state=state)
 
 
+
+
 def cleanup(state):
     mirror_error = None
     try:
@@ -495,12 +505,12 @@ def cleanup(state):
             if time.monotonic() >= deadline:
                 raise RuntimeError('Owned output has not disappeared; recovery state retained')
             time.sleep(0.1)
-    elif original_live:
+    elif original_live and session_mode(state) == 'extend':
         release_reservation(state)
     if original_live and session_mode(state) == 'mirror':
         unload_mirror(state)
     # Hyprland migrates any remaining windows/workspaces; never close user apps.
-    for name in ('capture.sock', 'capture-control.sock', 'bridge-ready', 'bridge-status.json', 'wayvnc.conf'):
+    for name in ('capture.sock', 'capture-control.sock', 'mirror.sock', 'bridge-ready', 'bridge-status.json', 'wayvnc.conf'):
         (Path(state['runtime']) / name).unlink(missing_ok=True)
     try:
         Path(state['runtime']).rmdir()
@@ -519,13 +529,12 @@ def serve():
     selected = capture_size(value)
     selected_mode = configured_mode(value)
     width, height, fps = selected['width'], selected['height'], selected['fps']
+    encoding = {'codec': 'gpu-regions', 'capture': 'dmabuf',
+                'difference': 'gpu-exact', 'encoder': 'gpu-solid+libturbojpeg'}
     before = monitors()
     if not before:
         raise RuntimeError('At least one existing desktop output is required')
-    output = 'OMARCHY-TV-' + secrets.token_hex(4)
-    # Put only our output to the left; never pin/reload any existing monitor.
-    left = min(m['x'] for m in before) - width
-    top = min(m['y'] for m in before)
+    output = 'OMARCHY-TV-' + secrets.token_hex(4) if selected_mode == 'extend' else None
     runtime_base = os.environ.get('XDG_RUNTIME_DIR')
     if not runtime_base:
         raise RuntimeError('XDG_RUNTIME_DIR is required for private capture sockets')
@@ -537,8 +546,11 @@ def serve():
     state = {'supervisor': identity(os.getpid()), 'instance': os.environ['HYPRLAND_INSTANCE_SIGNATURE'],
              'output': output, 'runtime': str(runtime_root), 'session': secrets.token_hex(16),
              'before': before, 'moves': {}, 'workspaceMoves': {}, 'captureSize': selected,
-             'mode': selected_mode, 'mirrorWorkspace': None, 'ready': False}
-    state['parkingWorkspace'] = 'OMARCHY-DISPLAY-' + state['session']
+             'mode': selected_mode, 'mirrorWorkspace': None, 'ready': False, 'encoding': encoding}
+    if selected_mode == 'extend':
+        state['parkingWorkspace'] = 'OMARCHY-DISPLAY-' + state['session']
+    else:
+        state['mirrorSource'] = 'OMARCHY-MIRROR-' + state['session']
     save(STATE, state)
     stopped = False
     def stop_signal(_signum, _frame):
@@ -547,29 +559,9 @@ def serve():
     signal.signal(signal.SIGTERM, stop_signal)
     signal.signal(signal.SIGINT, stop_signal)
     try:
+        computer = next((monitor for monitor in before if monitor.get('focused')), before[0])
         if selected_mode == 'mirror':
             load_mirror(state)
-        reserve_output(state, hypr('workspaces', state=state, json_output=True))
-        hypr('eval', 'hl.monitor({output="%s",mode="%dx%d@%d",position="%dx%d",scale=1,mirror=""})' %
-             (output, width, height, fps, left, top), state=state)
-        hypr('output', 'create', 'headless', output, state=state)
-        deadline = time.monotonic() + 10
-        while True:
-            current = monitors(state)
-            target = next((m for m in current if m['name'] == output), None)
-            if target and target['width'] == width and target['height'] == height and target['scale'] == 1 and \
-                    target['x'] == left and target['y'] == top and target['mirrorOf'] == 'none' and \
-                    target.get('activeWorkspace', {}).get('name') == state['parkingWorkspace']:
-                require_existing_geometry(before, current)
-                break
-            if stopped or time.monotonic() > deadline:
-                raise RuntimeError('New headless output did not reach the requested independent geometry')
-            time.sleep(0.1)
-        require_existing_geometry(before, monitors(state))
-        computer = next((monitor for monitor in before if monitor.get('focused')), before[0])
-        hypr('eval', 'hl.dispatch(hl.dsp.focus({monitor=%s}))' %
-             json.dumps(computer['name'], ensure_ascii=False), state=state)
-        if selected_mode == 'mirror':
             workspaces = hypr('workspaces', state=state, json_output=True)
             candidates = [item for item in workspaces if item['id'] > 0 and item['monitor'] in
                           {monitor['name'] for monitor in before}]
@@ -578,16 +570,48 @@ def serve():
             initial = initial or next(iter(candidates), None)
             if not initial:
                 raise RuntimeError('Mirror needs an existing numbered workspace on the computer')
-            select_mirror(state, initial['id'])
-        env = dict(os.environ, OMARCHY_TV_OUTPUT=output)
-        capture_config = runtime_root / 'wayvnc.conf'
-        capture_config.write_text('enable_auth=false\n')
-        os.chmod(capture_config, 0o600)
+            state['mirrorWorkspace'] = initial['id']
+            hypr('eval', 'assert(hl.plugin.omarchy_display.start(%s,%s,%d,%d,%d,%d))' %
+                 (json.dumps(state['mirrorSource']), json.dumps(str(runtime_root / 'mirror.sock')),
+                  initial['id'], width, height, fps), state=state)
+            require_mirror_health(state)
+            require_existing_geometry(before, monitors(state))
+            command = [str(MIRROR_CAPTURE), '--source', str(runtime_root / 'mirror.sock'),
+                       '--rfb', str(runtime_root / 'capture.sock'),
+                       '--control', str(runtime_root / 'capture-control.sock'),
+                       '--width', str(width), '--height', str(height)]
+            env = dict(os.environ)
+        else:
+            left = min(m['x'] for m in before) - width
+            top = min(m['y'] for m in before)
+            reserve_output(state, hypr('workspaces', state=state, json_output=True))
+            hypr('eval', 'hl.monitor({output="%s",mode="%dx%d@%d",position="%dx%d",scale=1,mirror=""})' %
+                 (output, width, height, fps, left, top), state=state)
+            hypr('output', 'create', 'headless', output, state=state)
+            deadline = time.monotonic() + 10
+            while True:
+                current = monitors(state)
+                target = next((m for m in current if m['name'] == output), None)
+                if target and target['width'] == width and target['height'] == height and target['scale'] == 1 and \
+                        target['x'] == left and target['y'] == top and target['mirrorOf'] == 'none' and \
+                        target.get('activeWorkspace', {}).get('name') == state['parkingWorkspace']:
+                    require_existing_geometry(before, current)
+                    break
+                if stopped or time.monotonic() > deadline:
+                    raise RuntimeError('New headless output did not reach the requested independent geometry')
+                time.sleep(0.1)
+            hypr('eval', 'hl.dispatch(hl.dsp.focus({monitor=%s}))' %
+                 json.dumps(computer['name'], ensure_ascii=False), state=state)
+            capture_config = runtime_root / 'wayvnc.conf'
+            capture_config.write_text('enable_auth=false\n')
+            os.chmod(capture_config, 0o600)
+            command = [str(CAPTURE), '--gpu', '--config', str(capture_config), '--disable-input',
+                       '--disable-resizing', '--render-cursor', '--max-fps=' + str(fps), '--output', output,
+                       '--socket', str(runtime_root / 'capture-control.sock'),
+                       '--unix-socket', str(runtime_root / 'capture.sock')]
+            env = dict(os.environ, OMARCHY_TV_OUTPUT=output)
         with (PRIVATE / 'capture.log').open('w') as log:
-            capture = spawn([str(CAPTURE), '--config', str(capture_config), '--disable-input',
-                '--disable-resizing', '--render-cursor', '--max-fps=' + str(fps), '--output', output,
-                '--socket', str(runtime_root / 'capture-control.sock'),
-                '--unix-socket', str(runtime_root / 'capture.sock')], log, env)
+            capture = spawn(command, log, env)
         state['capture'] = identity(capture.pid)
         save(STATE, state)
         deadline = time.monotonic() + 10
@@ -599,7 +623,11 @@ def serve():
             bridge_env = dict(os.environ, OMARCHY_DISPLAY_SESSION=state['session'],
                               OMARCHY_DISPLAY_CAPTURE=json.dumps(state['capture']),
                               OMARCHY_DISPLAY_CAPTURE_SIZE=json.dumps(selected),
-                              OMARCHY_DISPLAY_PYTHON=sys.executable)
+                              OMARCHY_DISPLAY_GPU=json.dumps(encoding),
+                              OMARCHY_DISPLAY_MIRROR=json.dumps({
+                                  'socket': str(Path(os.environ['XDG_RUNTIME_DIR']) / 'hypr' / state['instance'] / '.socket.sock'),
+                                  'control': str(runtime_root / 'capture-control.sock'),
+                                  'source': state['mirrorSource']} if selected_mode == 'mirror' else None))
             bridge = spawn(['node', str(ROOT / 'desktop/bridge.cjs'), str(CONFIG), str(runtime_root)],
                            log, bridge_env)
         state['bridge'] = identity(bridge.pid)
@@ -614,10 +642,11 @@ def serve():
         while not stopped:
             if capture.poll() is not None or bridge.poll() is not None:
                 raise RuntimeError('Capture or bridge exited; stream stopped')
-            current = next((m for m in monitors(state) if m['name'] == output), None)
-            if not current or current['mirrorOf'] != 'none' or current['width'] != width or \
-                    current['height'] != height or current['scale'] != 1:
-                raise RuntimeError('Owned independent output disappeared, resized or became mirrored')
+            if selected_mode == 'extend':
+                current = next((m for m in monitors(state) if m['name'] == output), None)
+                if not current or current['mirrorOf'] != 'none' or current['width'] != width or \
+                        current['height'] != height or current['scale'] != 1:
+                    raise RuntimeError('Owned independent output disappeared, resized or became mirrored')
             if selected_mode == 'mirror':
                 with action_lock():
                     latest = load(STATE)
@@ -682,7 +711,7 @@ def stop():
     with action_lock():
         if STATE.exists():
             cleanup(load(STATE))
-    print('Owned capture, bridge and headless output removed; existing monitors/apps preserved.')
+    print('Owned display capture and bridge stopped; existing monitors/apps preserved.')
 
 
 def action_lock():
@@ -720,8 +749,7 @@ def select_mirror(state, number):
     if not current or number <= 0 or current['monitor'] == state['output'] or \
             current['monitor'] not in {monitor['name'] for monitor in state['before']}:
         raise RuntimeError('Mirror requires a numbered workspace on its original computer monitor')
-    hypr('eval', 'assert(hl.plugin.omarchy_display.mirror(%s,%d,%d))' %
-         (json.dumps(state['output']), number, state['captureSize']['fps']), state=state)
+    hypr('eval', 'assert(hl.plugin.omarchy_display.mirror(%d))' % number, state=state)
     state['mirrorWorkspace'] = number
     require_mirror_health(state)
     save(STATE, state)
@@ -895,7 +923,8 @@ def status():
               'output': None, 'message': 'Display is stopped.', 'viewOnly': True, 'audio': False,
               'width': None, 'height': None, 'fps': None, 'workspaces': [], 'receiver': None,
               'sizing': sizing_status(), 'tvWorkspace': None, 'tvWorkspaceMirror': None, 'panel': panel_report(),
-              'mode': None, 'configuredMode': configured_mode(), 'modeRequiresRestart': False}
+              'mode': None, 'configuredMode': configured_mode(), 'modeRequiresRestart': False,
+              'encoding': None, 'transport': 'regions', 'performance': []}
     if not STATE.exists():
         result['workspaces'] = workspace_summary()
         return result
@@ -912,8 +941,11 @@ def status():
         result.update(width=selected['width'], height=selected['height'], fps=selected['fps'],
                       workspaces=workspace_summary(state), sizing=sizing_status(current=selected),
                       tvWorkspace=result['tvWorkspaceMirror'] if active_mode == 'mirror' else tv_workspace(state))
-        output = state.get('output', '')
-        if re.fullmatch('OMARCHY-TV-[0-9a-f]{8}', output):
+        output = state.get('output')
+        if active_mode == 'mirror':
+            if output is not None or not re.fullmatch('OMARCHY-MIRROR-[0-9a-f]{32}', state.get('mirrorSource', '')):
+                raise RuntimeError('Invalid offscreen Mirror ownership record')
+        elif isinstance(output, str) and re.fullmatch('OMARCHY-TV-[0-9a-f]{8}', output):
             result['output'] = output
         else:
             raise RuntimeError('Invalid owned output record')
@@ -929,17 +961,19 @@ def status():
         if report.get('session') != state['session'] or report.get('bridge') != state['bridge'] or \
                 report.get('capture') != state['capture'] or not 0 <= age <= 3 or \
                 type(report.get('clients')) is not int or not 0 <= report['clients'] <= 2 or \
-                type(report.get('error')) is not bool:
+                type(report.get('error')) is not bool or report.get('encoding') != state.get('encoding'):
             raise RuntimeError('Stale backend report')
         if report['error']:
-            raise RuntimeError('JPEG producer failed')
+            raise RuntimeError('GPU region capture failed')
         clients = report['clients']
         receiver = receiver_info(report.get('receiver')) if clients else None
         if receiver and result['panel']:
             receiver.update(panelWidth=result['panel']['width'], panelHeight=result['panel']['height'])
-        result.update(receiver=receiver, sizing=sizing_status(receiver, selected))
+        result.update(receiver=receiver, sizing=sizing_status(receiver, selected), encoding=state['encoding'],
+                      performance=report.get('performance', []))
         result.update(state='sharing' if clients else 'ready', clients=clients,
-                      message='Sharing the independent display.' if clients else 'Ready; no viewers connected.')
+                      message=('Mirroring workspace %d.' % state['mirrorWorkspace'] if active_mode == 'mirror'
+                               else 'Sharing the independent display.') if clients else 'Ready; no viewers connected.')
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
         result.update(state='error', clients=0, message='Display needs attention; run stop to recover.')
     return result
@@ -958,6 +992,12 @@ def show_status(as_json=False):
             print('Output: ' + value['output'] + '; viewers: ' + str(value['clients']))
         if value['width']:
             print('Capture: %dx%d; frame cap %d fps' % (value['width'], value['height'], value['fps']))
+        if value['encoding']:
+            print('Pixels: GPU DMA-BUF capture, exact GPU comparison and solid-colour fills; non-uniform regions use CPU JPEG Q90 4:4:4.')
+            timings = [row['captureToAckMs'] for row in value['performance']
+                       if isinstance(row, dict) and isinstance(row.get('captureToAckMs'), (int, float))]
+            if timings:
+                print('Latest capture-to-draw acknowledgement: %.1f ms (not a physical panel measurement).' % max(timings))
         print('Displayed TV workspace: ' + str(value['tvWorkspace'] or 'none'))
         for item in value['workspaces']:
             print('Workspace %d: %d windows%s' %

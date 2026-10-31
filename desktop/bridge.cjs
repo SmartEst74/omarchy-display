@@ -1,12 +1,12 @@
 'use strict';
-// Authenticated view-only JPEG frames. Client messages are exact display ACKs only.
+// Authenticated GPU-differenced image regions; presentation ACKs drive capture.
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
 const crypto = require('node:crypto');
 const {WebSocketServer} = require('ws');
-const JpegProducer = require('./jpeg-producer.cjs');
+const RegionProducer = require('./region-producer.cjs');
 const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const runtime = process.argv[3];
 process.umask(0o077);
@@ -14,17 +14,17 @@ const captureIdentity = JSON.parse(process.env.OMARCHY_DISPLAY_CAPTURE);
 const captureSize = JSON.parse(process.env.OMARCHY_DISPLAY_CAPTURE_SIZE || 'null');
 if (!captureSize || !Number.isInteger(captureSize.width) || !Number.isInteger(captureSize.height) ||
     captureSize.width < 320 || captureSize.height < 320 || captureSize.width > 8192 || captureSize.height > 8192 ||
-    captureSize.width * captureSize.height > 3840 * 2160 || ![15, 30, 60].includes(captureSize.fps) ||
-    !path.isAbsolute(process.env.OMARCHY_DISPLAY_PYTHON || '')) {
-  throw new Error('Owned capture dimensions and Python runtime are required');
+    captureSize.width * captureSize.height > 3840 * 2160 || ![15, 30, 60].includes(captureSize.fps)) {
+  throw new Error('Owned capture dimensions are required');
 }
+const encoding = JSON.parse(process.env.OMARCHY_DISPLAY_GPU || 'null');
+if (!encoding || encoding.codec !== 'gpu-regions' || encoding.capture !== 'dmabuf' ||
+    encoding.difference !== 'gpu-exact' || encoding.encoder !== 'gpu-solid+libturbojpeg') {
+  throw new Error('The native GPU region backend is required');
+}
+const mirror = JSON.parse(process.env.OMARCHY_DISPLAY_MIRROR);
 const viewers = new Map();
-let producer = null;
-let retiring = false;
-let producerReady = false;
 let producerError = false;
-let latest = null;
-let sequence = 0;
 const selfStat = fs.readFileSync('/proc/self/stat', 'utf8');
 const stat = selfStat.slice(selfStat.lastIndexOf(')') + 1).trim().split(/\s+/);
 const bridgeIdentity = {pid: process.pid, start: stat[19]};
@@ -34,7 +34,10 @@ let receiverPeer = null;
 function publish() {
   const report = {session: process.env.OMARCHY_DISPLAY_SESSION,
     bridge: bridgeIdentity, capture: captureIdentity, clients: connected.size,
-    updated: Number(process.hrtime.bigint()) / 1e9, receiver, error: producerError};
+    updated: Number(process.hrtime.bigint()) / 1e9, receiver, error: producerError, encoding};
+  report.performance = [...viewers.values()].filter(c => c.ackedFrames).map(c => ({
+    presentedFrames: c.ackedFrames, captureToAckMs: c.captureToAckMs, encodedToAckMs: c.encodedToAckMs
+  }));
   const destination = path.join(runtime, 'bridge-status.json');
   fs.writeFileSync(destination + '.tmp', JSON.stringify(report), {mode: 0o600});
   fs.renameSync(destination + '.tmp', destination);
@@ -132,88 +135,70 @@ function requestHandler(req, res) {
   stream.pipe(res);
 }
 const wss = new WebSocketServer({noServer: true, perMessageDeflate: false,
-  maxPayload: 128, handleProtocols: (protocols) => protocols.has('binary') ? 'binary' : false});
-function stopProducer() {
-  if (producer && !retiring) {
-    const previous = producer;
-    retiring = true;
-    previous.stop();
-    previous.closed.then(() => {
-      if (producer === previous) producer = null;
-      retiring = false;
-    });
-  }
-  producerReady = false; latest = null;
-  connected.clear(); receiver = null; receiverPeer = null;
-}
+  maxPayload: 128, handleProtocols: protocols => protocols.has('regions') ? 'regions' : false});
 function disconnect(ws) {
-  if (!viewers.delete(ws)) return;
+  const client = viewers.get(ws);
+  if (!client) return;
+  viewers.delete(ws);
+  if (client.producer) client.producer.stop();
   connected.delete(ws);
   if (![...connected.values()].includes(receiverPeer)) { receiver = null; receiverPeer = null; }
-  if (!viewers.size) stopProducer();
   publish();
 }
 function drop(ws) {
   disconnect(ws);
   ws.terminate();
 }
-function sendLatest(ws, client) {
-  if (!client.helloSent || client.writing || client.outstanding !== null ||
-      !latest || latest.sequence === client.lastSent || ws.readyState !== 1) return;
+function advance(client) {
+  if (!client.writing && client.outstanding === null && client.producer) client.producer.acknowledge();
+}
+function sendFrame(ws, client) {
+  if (!client.helloSent || client.writing || client.outstanding !== null || !client.packet || ws.readyState !== 1) return;
   if (ws.bufferedAmount) { drop(ws); return; }
-  const frame = latest;
-  client.outstanding = frame.sequence;
-  client.lastSent = frame.sequence;
-  client.sentAt = Number(process.hrtime.bigint()) / 1e9;
+  const packet = client.packet;
+  client.packet = null;
+  client.outstanding = client.sequence;
+  client.sentAtUs = Number(process.hrtime.bigint() / 1000n);
   client.writing = true;
-  try {
-    ws.send(frame.packet, {binary: true}, (error) => {
-      client.writing = false;
-      if (error) { drop(ws); return; }
-      if (viewers.has(ws)) sendLatest(ws, client);
-    });
-  } catch {
-    drop(ws);
-  }
+  ws.send(packet, {binary: true}, error => {
+    client.writing = false;
+    if (error) { drop(ws); return; }
+    if (viewers.has(ws)) advance(client);
+  });
 }
-function frame(jpeg) {
-  if (!producer || !viewers.size) return;
-  if (jpeg.length + 20 > 16 * 1024 * 1024) throw new Error('JPEG transport frame budget exceeded');
-  const packet = Buffer.allocUnsafe(20 + jpeg.length);
-  packet.write('ODJ1', 0, 4, 'ascii');
-  sequence = (sequence + 1) >>> 0;
-  packet.writeUInt32BE(sequence, 4);
-  packet.writeDoubleBE(Date.now(), 8);
-  packet.writeUInt16BE(captureSize.width, 16);
-  packet.writeUInt16BE(captureSize.height, 18);
-  jpeg.copy(packet, 20);
-  latest = {sequence, packet};
-  const first = !producerReady;
-  producerReady = true;
-  for (const [ws, client] of viewers) {
-    if (ws.readyState !== 1) continue;
-    connected.set(ws, client.peer);
-    sendLatest(ws, client);
+function frame(ws, client, update) {
+  if (!viewers.has(ws)) return;
+  if (client.packet || client.outstanding !== null) {
+    sourceFailure(ws, new Error('Capture produced an unacknowledged region batch')); return;
   }
-  if (first) publish();
+  const packet = Buffer.allocUnsafe(update.bytes);
+  packet.writeUInt32BE(0x4f445233, 0);
+  client.sequence = (client.sequence + 1) >>> 0;
+  packet.writeUInt32BE(client.sequence, 4);
+  packet.writeDoubleBE(update.capturePtsUs, 8);
+  packet.writeDoubleBE(Date.now(), 16);
+  packet.writeUInt16BE(captureSize.width, 24);
+  packet.writeUInt16BE(captureSize.height, 26);
+  packet.writeUInt16BE(update.regions.length, 28);
+  packet.writeUInt16BE(update.full ? 1 : 0, 30);
+  let table = 32, offset = 32 + update.regions.length * 16;
+  for (const region of update.regions) {
+    packet.writeUInt16BE(region.x, table); packet.writeUInt16BE(region.y, table + 2);
+    packet.writeUInt16BE(region.width, table + 4); packet.writeUInt16BE(region.height, table + 6);
+    packet.writeUInt32BE(region.kind, table + 8);
+    packet.writeUInt32BE(region.data.length, table + 12);
+    region.data.copy(packet, offset);
+    table += 16; offset += region.data.length;
+  }
+  client.capturePtsUs = update.capturePtsUs;
+  client.encodedAtUs = Number(process.hrtime.bigint() / 1000n);
+  client.packet = packet;
+  sendFrame(ws, client);
 }
-function sourceFailure(error) {
+function sourceFailure(ws, error) {
   producerError = true;
-  console.error('JPEG producer stopped: ' + error.message);
-  stopProducer();
-  for (const ws of [...viewers.keys()]) drop(ws);
-  publish();
-}
-function startProducer() {
-  if (producer || !viewers.size) return;
-  producerError = false;
-  try {
-    producer = new JpegProducer({runtime, ...captureSize, python: process.env.OMARCHY_DISPLAY_PYTHON,
-      onFrame: frame, onError: sourceFailure});
-  } catch (error) {
-    sourceFailure(error);
-  }
-  publish();
+  console.error('GPU region capture stopped: ' + error.message);
+  drop(ws);
 }
 function reject(socket, status) {
   socket.end('HTTP/1.1 ' + status + '\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
@@ -228,16 +213,18 @@ function upgrade(req, socket, head) {
   const provided = protocols.filter((s) => s.startsWith('pair.'));
   const expected = Buffer.from('pair.' + config.secret);
   const supplied = Buffer.from(provided.length === 1 ? provided[0] : '');
-  if (!protocols.includes('binary') || supplied.length !== expected.length ||
+  if (!protocols.includes('regions') || supplied.length !== expected.length ||
       !crypto.timingSafeEqual(supplied, expected)) {
     reject(socket, '401 Unauthorized'); return;
   }
-  if (wss.clients.size >= 2 || retiring || (producer && producer.stopped)) {
+  if (stopping || wss.clients.size >= 2) {
     reject(socket, '503 Service Unavailable'); return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     const client = {peer: normalize(req.socket.remoteAddress || ''), helloSent: false,
-      writing: false, outstanding: null, lastSent: null, sentAt: 0};
+      openedAtUs: Number(process.hrtime.bigint() / 1000n), producer: null, packet: null,
+      sequence: 0, outstanding: null, writing: false, sentAtUs: 0, ackedFrames: 0,
+      captureToAckMs: null, encodedToAckMs: null};
     viewers.set(ws, client);
     ws.on('error', () => drop(ws));
     ws.on('close', () => disconnect(ws));
@@ -250,17 +237,25 @@ function upgrade(req, socket, head) {
           client.outstanding === null || ack.sequence !== client.outstanding) {
         drop(ws); return;
       }
-      client.outstanding = null;
-      sendLatest(ws, client);
+      const now = Number(process.hrtime.bigint() / 1000n);
+      const captureToAck = (now - client.capturePtsUs) / 1000;
+      client.captureToAckMs = captureToAck >= 0 && captureToAck < 60000 ? captureToAck : null;
+      client.encodedToAckMs = (now - client.encodedAtUs) / 1000;
+      client.outstanding = null; client.ackedFrames++;
+      producerError = false;
+      if (!connected.has(ws)) { connected.set(ws, client.peer); publish(); }
+      advance(client);
     });
-    if (producerReady) connected.set(ws, client.peer);
-    ws.send(JSON.stringify({type: 'hello', width: captureSize.width, height: captureSize.height,
-      fps: captureSize.fps, viewOnly: true, audio: false}), {binary: false}, (error) => {
+    ws.send(JSON.stringify({type: 'hello', codec: 'gpu-regions',
+      width: captureSize.width, height: captureSize.height, fps: captureSize.fps,
+      viewOnly: true, audio: false}), {binary: false}, error => {
       if (error) { drop(ws); return; }
-      client.helloSent = true;
-      if (viewers.has(ws)) sendLatest(ws, client);
+      client.helloSent = true; sendFrame(ws, client);
     });
-    startProducer();
+    try {
+      client.producer = new RegionProducer({runtime, mirror, ...captureSize,
+        onFrame: update => frame(ws, client, update), onError: error => sourceFailure(ws, error)});
+    } catch (error) { sourceFailure(ws, error); }
     publish();
   });
 }
@@ -281,19 +276,29 @@ for (const host of new Set([config.listen, '127.0.0.1'])) {
   servers.push(server);
 }
 const heartbeat = setInterval(() => {
-  const now = Number(process.hrtime.bigint()) / 1e9;
+  const now = Number(process.hrtime.bigint() / 1000n);
   for (const [ws, client] of viewers) {
-    if (client.outstanding !== null && now - client.sentAt > 5) drop(ws);
+    if (client.outstanding !== null ? now - client.sentAtUs > 5e6 :
+        !connected.has(ws) && now - client.openedAtUs > 15e6) drop(ws);
   }
   publish();
 }, 1000);
-function stop() {
+let stopping = false;
+async function stop() {
+  if (stopping) return;
+  stopping = true;
   clearInterval(heartbeat);
-  stopProducer();
+  const closing = [...viewers.values()].filter(c => c.producer).map(c => c.producer.closed);
   for (const ws of [...viewers.keys()]) drop(ws);
-  publish();
   for (const server of servers) server.close();
-  process.exit(0);
+  try {
+    await Promise.all(closing);
+    publish();
+    process.exit(0);
+  } catch (error) {
+    console.error('GPU region cleanup failed: ' + error.message);
+    process.exit(1);
+  }
 }
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
